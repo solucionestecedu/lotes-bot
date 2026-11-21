@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lotes-Bot · chat de prueba</title>
+<style>
+  :root { --verde: #075e54; --burbuja: #dcf8c6; --fondo: #ece5dd; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--fondo); height: 100vh; display: flex; flex-direction: column; }
+  header { background: var(--verde); color: #fff; padding: 12px 16px; display: flex; align-items: center; gap: 12px; }
+  header b { font-size: 17px; }
+  header small { opacity: .8; }
+  header button { margin-left: auto; background: transparent; color: #fff; border: 1px solid #ffffff80; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  #chat { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+  .m { max-width: 78%; padding: 8px 11px; border-radius: 8px; white-space: pre-wrap; word-wrap: break-word; box-shadow: 0 1px 1px #0002; }
+  .yo { align-self: flex-end; background: var(--burbuja); }
+  .bot { align-self: flex-start; background: #fff; }
+  .doc { align-self: flex-start; background: #fff; display: flex; gap: 10px; align-items: center; text-decoration: none; color: inherit; }
+  .doc span:first-child { font-size: 26px; }
+  .doc small { display: block; color: #667; }
+  .pensando { align-self: flex-start; color: #667; font-style: italic; }
+  form { display: flex; gap: 8px; padding: 10px; background: #f0f0f0; align-items: flex-end; }
+  textarea { flex: 1; resize: none; border: 0; border-radius: 20px; padding: 10px 14px; font: inherit; max-height: 160px; }
+  .icono { border: 0; background: #fff; border-radius: 50%; width: 42px; height: 42px; font-size: 19px; cursor: pointer; flex: none; }
+  .enviar { background: var(--verde); color: #fff; }
+  #adj { font-size: 13px; color: #555; padding: 0 14px 6px; display: none; background: #f0f0f0; }
+</style>
+</head>
+<body>
+<header><div><b>Lotes-Bot</b><br><small>chat de prueba (igual que en WhatsApp)</small></div>
+  <button id="reiniciar" type="button">Empezar de cero</button></header>
+<div id="chat"><div class="m bot">Hola 👋 Mándame la foto o el PDF del cuadro de rumbos del plano (📎), o pega los rumbos como texto. Con 📍 me compartes la ubicación del terreno.</div></div>
+<div id="adj"></div>
+<form id="f">
+  <input type="file" id="archivo" accept="image/*,application/pdf" hidden>
+  <button class="icono" type="button" id="clip" title="Adjuntar plano">📎</button>
+  <button class="icono" type="button" id="pin" title="Compartir ubicación">📍</button>
+  <textarea id="texto" rows="1" placeholder="Escribe un mensaje"></textarea>
+  <button class="icono enviar" type="submit" title="Enviar">➤</button>
+</form>
+<script>
+const qs = new URLSearchParams(location.search), token = qs.get('t') || '';
+let sesion = sessionStorage.getItem('sesion');
+if (!sesion) { sesion = Math.random().toString(36).slice(2); sessionStorage.setItem('sesion', sesion); }
+const chat = document.getElementById('chat'), texto = document.getElementById('texto'), archivo = document.getElementById('archivo'), adj = document.getElementById('adj');
+let ubic = null;
+function burbuja(cls, contenido) { const d = document.createElement('div'); d.className = 'm ' + cls; d.textContent = contenido; chat.appendChild(d); chat.scrollTop = chat.scrollHeight; return d; }
+function formato(t) { return t; }
+function doc(s) {
+  const a = document.createElement('a'); a.className = 'm doc'; a.href = s.url; a.target = '_blank';
+  a.innerHTML = '<span>📄</span><span></span>'; a.children[1].textContent = s.nombre;
+  const sm = document.createElement('small'); sm.textContent = s.titulo; a.children[1].appendChild(sm);
+  chat.appendChild(a); chat.scrollTop = chat.scrollHeight;
+}
+function mostrarAdj() {
+  const partes = [];
+  if (archivo.files[0]) partes.push('📎 ' + archivo.files[0].name);
+  if (ubic) partes.push('📍 ' + ubic.lat.toFixed(5) + ', ' + ubic.lng.toFixed(5));
+  adj.textContent = partes.join('   '); adj.style.display = partes.length ? 'block' : 'none';
+}
+document.getElementById('clip').onclick = () => archivo.click();
+archivo.onchange = mostrarAdj;
+document.getElementById('pin').onclick = () => {
+  const manual = () => { const v = prompt('Escribe latitud, longitud (ej. 13.5103, -89.4584):'); if (!v) return; const [a, b] = v.split(',').map(Number); if (isFinite(a) && isFinite(b)) { ubic = { lat: a, lng: b }; mostrarAdj(); } };
+  if (!navigator.geolocation) return manual();
+  navigator.geolocation.getCurrentPosition(p => { ubic = { lat: p.coords.latitude, lng: p.coords.longitude }; mostrarAdj(); }, manual, { timeout: 8000 });
+};
+document.getElementById('reiniciar').onclick = () => enviar('/reiniciar');
+texto.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); document.getElementById('f').requestSubmit(); } });
+document.getElementById('f').onsubmit = e => { e.preventDefault(); enviar(texto.value); };
+async function enviar(t) {
+  if (!t.trim() && !archivo.files[0] && !ubic) return;
+  const fd = new FormData();
+  fd.append('token', token); fd.append('sesion', sesion); fd.append('texto', t);
+  let eco = t;
+  if (archivo.files[0]) { fd.append('archivo', archivo.files[0]); eco = '📎 ' + archivo.files[0].name + (t ? '\n' + t : ''); }
+  if (ubic) { fd.append('lat', ubic.lat); fd.append('lng', ubic.lng); eco = '📍 Ubicación compartida' + (eco ? '\n' + eco : ''); }
+  burbuja('yo', eco);
+  texto.value = ''; archivo.value = ''; ubic = null; mostrarAdj();
+  const p = document.createElement('div'); p.className = 'pensando'; p.textContent = 'escribiendo…'; chat.appendChild(p);
+  try {
+    const r = await fetch('chat', { method: 'POST', body: fd });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    p.remove();
+    for (const s of j.salidas) s.tipo === 'archivo' ? doc(s) : burbuja('bot', s.texto);
+  } catch (err) { p.remove(); burbuja('bot', 'No pude conectar con el servidor (' + err.message + ').'); }
+}
+</script>
+</body>
+</html>
