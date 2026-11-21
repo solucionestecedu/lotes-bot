@@ -36,6 +36,11 @@ class LLM:
 
 
 # ---------------------------------------------------------------------------- Gemini
+def _temperatura(modelo: str, valor: float) -> float | None:
+    """Gemini 3 en adelante se recomienda con su temperatura por defecto; a los 2.x sí se les baja."""
+    return valor if modelo.startswith(("gemini-1", "gemini-2")) else None
+
+
 class GeminiLLM(LLM):
     puede_ver = True
 
@@ -79,7 +84,7 @@ class GeminiLLM(LLM):
                                           parameters_json_schema=h["parametros"] if h["parametros"].get("properties") else None)
                 for h in herramientas])],
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-            temperature=0.3,
+            temperature=_temperatura(self.modelo_chat, 0.3),
         )
         r = self.client.models.generate_content(model=self.modelo_chat, contents=self._contenidos(mensajes), config=config)
         llamadas = [{"nombre": fc.name, "args": dict(fc.args or {})} for fc in (r.function_calls or [])]
@@ -96,7 +101,7 @@ class GeminiLLM(LLM):
             model=self.modelo_vision,
             contents=[types.Part.from_bytes(data=datos, mime_type=mime), instruccion],
             config=types.GenerateContentConfig(response_mime_type="application/json", response_json_schema=esquema,
-                                               temperature=0.0),
+                                               temperature=_temperatura(self.modelo_vision, 0.0)),
         )
         return json.loads(r.text)
 

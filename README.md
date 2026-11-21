@@ -14,7 +14,7 @@ Le mandas la foto o el PDF del plano del topógrafo y te devuelve:
 
 ## Cómo piensa
 
-**La IA lee; la matemática verifica.** Gemini transcribe el cuadro de rumbos del plano. Después, el código recorre
+**La IA lee; la matemática verifica.** Gemini (3.8 Flash) transcribe el cuadro de rumbos del plano. Después, el código recorre
 la poligonal y revisa que cierre, que el área cuadre con la del plano y que las coordenadas escritas coincidan.
 Si Gemini leyó mal un número, el cierre falla y el bot señala el tramo sospechoso para que lo confirmes.
 Ningún número que ves sale del modelo de lenguaje: todos salen del motor de cálculo (`motor/`).

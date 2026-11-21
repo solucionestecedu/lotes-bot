@@ -66,3 +66,10 @@ def test_lectura_de_plano_con_esquema_json():
     pet = g.client.models.peticiones[0]
     assert pet["config"].response_mime_type == "application/json" and pet["config"].response_json_schema == ESQUEMA_PLANO
     assert pet["contents"][0].inline_data.mime_type == "image/png"
+
+
+def test_gemini_3_usa_temperatura_por_defecto():
+    g = _llm([_respuesta(types.Part.from_text(text="hola"))])
+    g.modelo_chat = "gemini-3.8-flash"
+    g.turno("s", [{"rol": "usuario", "texto": "hola"}], HERRAMIENTAS)
+    assert g.client.models.peticiones[0]["config"].temperature is None

@@ -10,8 +10,8 @@ ENTORNO = _env("ENTORNO", "produccion")  # produccion | dev
 
 # Gemini (Google AI Studio)
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
-MODELO_CHAT = _env("MODELO_CHAT", "gemini-2.5-flash")
-MODELO_VISION = _env("MODELO_VISION", "gemini-2.5-flash")
+MODELO_CHAT = _env("MODELO_CHAT", "gemini-3.8-flash")
+MODELO_VISION = _env("MODELO_VISION", "gemini-3.8-flash")
 
 # WhatsApp Cloud API (Meta)
 META_APP_SECRET = _env("META_APP_SECRET")
