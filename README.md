@@ -61,6 +61,11 @@ pytest -q
 
 ## Publicarlo en Google Cloud Run
 
+**Forma fácil:** abre [Cloud Shell](https://shell.cloud.google.com), sube la carpeta (o el .zip), entra a ella y corre
+`bash desplegar.sh`. Te pregunta el proyecto y la llave de Gemini, y al final te da el enlace del chat de prueba.
+
+**Forma manual**, paso por paso:
+
 Necesitas el [SDK de gcloud](https://cloud.google.com/sdk/docs/install) y un proyecto de Google Cloud con facturación.
 Cambia `MI_PROYECTO` por el tuyo.
 
