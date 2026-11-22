@@ -7,7 +7,8 @@ Le mandas la foto o el PDF del plano del topógrafo y te devuelve:
 - la **verificación** del plano (cierre de la poligonal, área, coordenadas),
 - el **relieve** aproximado (curvas de nivel con datos satelitales),
 - un **prediseño de lotes** (calles, lotes y área verde),
-- la **lámina en PDF** lista para imprimir en tabloide a escala, más **KML** (Google Earth) y **DXF** (AutoCAD / Civil 3D).
+- la **lámina en PDF** lista para imprimir en tabloide a escala, más **KML** (Google Earth) y **DXF** (AutoCAD / Civil 3D),
+- una **vista 3D** del fraccionamiento y un **modelo 3D en DXF** (terreno, lotes, calles y casas tipo) para renderizar en AutoCAD.
 
 > Es un **anteproyecto**: sirve para decidir rápido si un terreno vale la pena y cuántos lotes da.
 > No sirve para trámite. La DOT, OPAMSS o el CNR piden levantamiento topográfico y la firma de un profesional autorizado.
@@ -34,6 +35,7 @@ WhatsApp ─► /webhook ─► agente.py ─► Gemini (conversa y decide)
 | `motor/lotificacion.py` | Prediseño automático de calles, lotes y área verde |
 | `motor/lamina.py` | Lámina PDF tabloide a escala: planialtimétrico + lotificación |
 | `motor/exportar.py` | KML y DXF |
+| `motor/modelo3d.py` | Maqueta 3D: DXF 3D para renderizar en AutoCAD y vista aérea en imagen |
 | `agente.py` | El agente: herramientas, reglas y memoria de la conversación |
 | `servicios/llm.py` | Gemini, y un "modo sin IA" para probar sin llave |
 | `servicios/whatsapp.py` | WhatsApp Cloud API de Meta |

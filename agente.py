@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass, field
 
 import config
-from motor import exportar, lamina, proyeccion, relieve
+from motor import exportar, lamina, modelo3d, proyeccion, relieve
 from motor.lotificacion import ErrorLotificacion, Parametros, lotificar
 from motor.rumbos import M2_POR_V2, ErrorRumbo, leer_rumbo, poligonal
 from motor.terreno import Terreno, desde_coordenadas, desde_texto_rumbos, desde_tramos, verificar_con_coordenadas
@@ -122,7 +122,8 @@ HERRAMIENTAS = [
          "angulo": {"type": "number", "description": "orientación de calles en grados; omitir para automático"},
      })},
     {"nombre": "generar_entregables", "descripcion": "Genera la lámina en PDF (planialtimétrico y, si hay prediseño, la "
-     "lotificación), el KML para Google Earth y el DXF para AutoCAD/Civil 3D, y se los envía al usuario.",
+     "lotificación), el KML para Google Earth, el DXF 2D para AutoCAD/Civil 3D y, si ya hay relieve, una vista 3D en "
+     "imagen y un modelo 3D (DXF) con terreno, lotes, calles y casas tipo para renderizar en AutoCAD. Se los envía al usuario.",
      "parametros": _obj({"nombre_proyecto": {"type": "string"}, "ubicacion": {"type": "string",
                          "description": "municipio y departamento"}, "propietario": {"type": "string"}})},
 ]
@@ -170,7 +171,8 @@ QUÉ HACES (en este orden):
 5. predisenar. Usa los valores por defecto salvo que el usuario diga otros (calle 8 m, lote 10×25 m, mínimo 200 m²,
    área verde 10 % del área útil). Si el terreno está fuera de San Salvador, la ley pide 12.5 m² de área verde por lote:
    pregunta si el terreno está dentro o fuera del área urbana cuando sea relevante.
-6. generar_entregables: lámina PDF lista para imprimir + KML + DXF. Pide nombre del proyecto y municipio si no los tienes.
+6. generar_entregables: vista 3D + lámina PDF lista para imprimir + KML + DXF 2D + DXF 3D. Pide nombre del proyecto y
+   municipio si no los tienes. La vista 3D y el modelo 3D son ilustrativos (casas tipo, relieve satelital).
 
 REGLAS:
 - Nunca inventes ni calcules números tú: todos salen de las herramientas. Si no hay dato, dilo.
@@ -468,9 +470,19 @@ class Agente:
             archivos.append((kml, "Para abrir en Google Earth"))
         dxf = os.path.join(carpeta, f"{base}.dxf")
         exportar.dxf(dxf, t, cs, lot)
-        archivos.append((dxf, "Para AutoCAD / Civil 3D (coordenadas Lambert SIRGAS)"))
+        archivos.append((dxf, "Plano 2D para AutoCAD / Civil 3D (coordenadas Lambert SIRGAS)"))
+        if m is not None and t.ubicado:
+            escena = modelo3d.construir(t, m, lot)
+            jpg = os.path.join(carpeta, f"{base}-vista-3d.jpg")
+            sub = (f"{len(lot.lotes)} lotes · " if lot else "") + (s.proyecto.get("ubicacion") or "")
+            modelo3d.vista(jpg, escena, t, nombre, sub.strip(" ·"), malla=m)
+            archivos.insert(0, (jpg, "Vista 3D ilustrativa del anteproyecto"))
+            dxf3d = os.path.join(carpeta, f"{base}-3d.dxf")
+            modelo3d.dxf(dxf3d, escena)
+            archivos.append((dxf3d, "Modelo 3D para AutoCAD: terreno, lotes, calles y casas tipo (vista Realista → Render)"))
         for ruta, titulo in archivos:
-            salidas.append({"tipo": "archivo", "ruta": ruta, "nombre": os.path.basename(ruta), "titulo": titulo})
+            salidas.append({"tipo": "archivo", "ruta": ruta, "nombre": os.path.basename(ruta), "titulo": titulo,
+                            "imagen": ruta.endswith(".jpg")})
         return {"ok": True, "archivos_enviados": [os.path.basename(a) for a, _ in archivos], "escala": f"1:{info['escala']:,}",
                 "hojas": info["hojas"], "nota": "Los archivos se envían automáticamente después de tu mensaje."}
 

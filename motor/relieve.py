@@ -134,10 +134,10 @@ def _desde_open_meteo(lat, lng, http) -> np.ndarray:
     return np.array(out, dtype=float)
 
 
-def descargar(anillo, paso: float = 5.0, http=None) -> Malla:
-    """Descarga alturas para una malla que cubre el terreno (coordenadas Lambert SIRGAS)."""
+def descargar(anillo, paso: float = 5.0, http=None, margen: float = 50.0) -> Malla:
+    """Descarga alturas para una malla que cubre el terreno y sus alrededores (coordenadas Lambert SIRGAS)."""
     http = http or requests.Session()
-    x0, y0, dx, nx, ny = malla_para(anillo, paso)
+    x0, y0, dx, nx, ny = malla_para(anillo, paso, margen)
     gx, gy = np.meshgrid(x0 + np.arange(nx) * dx, y0 + np.arange(ny) * dx)
     t = proyeccion._t(proyeccion.SIRGAS_LAMBERT, "EPSG:4326")
     lng, lat = t.transform(gx, gy)
@@ -146,7 +146,7 @@ def descargar(anillo, paso: float = 5.0, http=None) -> Malla:
         fuente = "aws"
     except Exception:
         # Open-Meteo limita peticiones: se usa una malla más gruesa (≤1500 puntos).
-        x0, y0, dx, nx, ny = malla_para(anillo, max(paso, 10.0), max_nodos=1500)
+        x0, y0, dx, nx, ny = malla_para(anillo, max(paso, 10.0), margen, max_nodos=1500)
         gx, gy = np.meshgrid(x0 + np.arange(nx) * dx, y0 + np.arange(ny) * dx)
         lng, lat = t.transform(gx, gy)
         try:

@@ -95,6 +95,8 @@ def procesar_whatsapp(m: dict):
         for s in agente.atender(sesion, m.get("texto", ""), adjuntos, ubicacion):
             if s["tipo"] == "texto":
                 wa.enviar_texto(destino, s["texto"])
+            elif s.get("imagen"):
+                wa.enviar_imagen(destino, s["ruta"], s["titulo"])
             elif not wa.enviar_documento(destino, s["ruta"], s["titulo"]) and config.URL_PUBLICA:
                 wa.enviar_texto(destino, f"{s['titulo']}: {config.URL_PUBLICA}{_publicar(s['ruta'])}")
     except Exception:
@@ -151,7 +153,8 @@ async def chat(token: str = Form(""), sesion: str = Form(...), texto: str = Form
     out = []
     for s in salidas:
         if s["tipo"] == "archivo":
-            out.append({"tipo": "archivo", "nombre": s["nombre"], "titulo": s["titulo"], "url": _publicar(s["ruta"])})
+            out.append({"tipo": "archivo", "nombre": s["nombre"], "titulo": s["titulo"], "url": _publicar(s["ruta"]),
+                        "imagen": bool(s.get("imagen"))})
         else:
             out.append(s)
     return {"salidas": out}

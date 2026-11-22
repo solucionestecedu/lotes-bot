@@ -19,6 +19,9 @@
   .doc { align-self: flex-start; background: #fff; display: flex; gap: 10px; align-items: center; text-decoration: none; color: inherit; }
   .doc span:first-child { font-size: 26px; }
   .doc small { display: block; color: #667; }
+  .img { align-self: flex-start; background: #fff; padding: 4px; max-width: 92%; }
+  .img img { display: block; max-width: 100%; border-radius: 6px; }
+  .img small { display: block; color: #667; padding: 4px 6px 2px; }
   .pensando { align-self: flex-start; color: #667; font-style: italic; }
   form { display: flex; gap: 8px; padding: 10px; background: #f0f0f0; align-items: flex-end; }
   textarea { flex: 1; resize: none; border: 0; border-radius: 20px; padding: 10px 14px; font: inherit; max-height: 160px; }
@@ -53,6 +56,12 @@ function doc(s) {
   const sm = document.createElement('small'); sm.textContent = s.titulo; a.children[1].appendChild(sm);
   chat.appendChild(a); chat.scrollTop = chat.scrollHeight;
 }
+function imagen(s) {
+  const a = document.createElement('a'); a.className = 'm img'; a.href = s.url; a.target = '_blank';
+  const im = document.createElement('img'); im.src = s.url; im.alt = s.titulo; im.onload = () => { chat.scrollTop = chat.scrollHeight; };
+  const sm = document.createElement('small'); sm.textContent = s.titulo;
+  a.appendChild(im); a.appendChild(sm); chat.appendChild(a);
+}
 function mostrarAdj() {
   const partes = [];
   if (archivo.files[0]) partes.push('📎 ' + archivo.files[0].name);
@@ -84,7 +93,7 @@ async function enviar(t) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const j = await r.json();
     p.remove();
-    for (const s of j.salidas) s.tipo === 'archivo' ? doc(s) : burbuja('bot', s.texto);
+    for (const s of j.salidas) s.tipo === 'archivo' ? (s.imagen ? imagen(s) : doc(s)) : burbuja('bot', s.texto);
   } catch (err) { p.remove(); burbuja('bot', 'No pude conectar con el servidor (' + err.message + ').'); }
 }
 </script>

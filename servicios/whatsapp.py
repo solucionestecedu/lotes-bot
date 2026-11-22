@@ -78,18 +78,26 @@ class WhatsApp:
             ok &= self._enviar(destino, {"type": "text", "text": {"preview_url": False, "body": texto[k:k + LIMITE_TEXTO]}})
         return ok
 
-    def enviar_documento(self, destino: str, ruta: str, titulo: str = "") -> bool:
-        # Meta solo acepta ciertos tipos de documento (PDF, Office, texto). KML y DXF son texto: se suben como
-        # text/plain conservando su nombre y extensión, y se abren normal en la computadora.
-        mime = mimetypes.guess_type(ruta)[0] or "text/plain"
-        if ruta.lower().endswith((".kml", ".dxf")):
-            mime = "text/plain"
+    def _subir(self, ruta: str, mime: str) -> str | None:
         with open(ruta, "rb") as f:
             r = self.http.post(f"{self.base}/{config.META_PHONE_NUMBER_ID}/media", headers=self._h, timeout=self.timeout,
                                data={"messaging_product": "whatsapp", "type": mime},
                                files={"file": (os.path.basename(ruta), f, mime)})
         if r.status_code >= 300 or "id" not in r.json():
             log.warning("Meta rechazó la subida: %s", r.status_code)
-            return False
-        return self._enviar(destino, {"type": "document", "document": {"id": r.json()["id"], "filename": os.path.basename(ruta),
-                                                                        "caption": titulo}})
+            return None
+        return r.json()["id"]
+
+    def enviar_imagen(self, destino: str, ruta: str, titulo: str = "") -> bool:
+        mid = self._subir(ruta, "image/jpeg")
+        return bool(mid) and self._enviar(destino, {"type": "image", "image": {"id": mid, "caption": titulo}})
+
+    def enviar_documento(self, destino: str, ruta: str, titulo: str = "") -> bool:
+        # Meta solo acepta ciertos tipos de documento (PDF, Office, texto). KML y DXF son texto: se suben como
+        # text/plain conservando su nombre y extensión, y se abren normal en la computadora.
+        mime = mimetypes.guess_type(ruta)[0] or "text/plain"
+        if ruta.lower().endswith((".kml", ".dxf")):
+            mime = "text/plain"
+        mid = self._subir(ruta, mime)
+        return bool(mid) and self._enviar(destino, {"type": "document", "document": {
+            "id": mid, "filename": os.path.basename(ruta), "caption": titulo}})
