@@ -146,6 +146,7 @@ def prueba_conversacion(modelo: str, imagenes: dict) -> dict:
         except Exception as e:  # noqa: BLE001
             respuesta = f"[ERROR {type(e).__name__}: {str(e)[:200]}]"
             archivos = []
+        print(f"    ({len(turnos) + 1}/{len(GUION)} listo en {round(time.time() - t0, 1)} s)", flush=True)
         turnos.append({"usuario": texto, "herramientas": usadas[n0:], "respuesta": respuesta, "archivos": archivos,
                        "preguntas": respuesta.count("?"), "segundos": round(time.time() - t0, 1)})
     t = s.get_terreno()

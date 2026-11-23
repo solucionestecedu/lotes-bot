@@ -44,10 +44,15 @@ def _temperatura(modelo: str, valor: float) -> float | None:
 class GeminiLLM(LLM):
     puede_ver = True
 
-    def __init__(self, api_key: str, modelo_chat: str, modelo_vision: str):
-        from google import genai
+    def __init__(self, api_key: str, modelo_chat: str, modelo_vision: str, timeout_s: float | None = None):
+        import os
 
-        self.client = genai.Client(api_key=api_key)
+        from google import genai
+        from google.genai import types
+
+        # sin límite, una llamada colgada deja la conversación trabada para siempre
+        timeout_s = timeout_s or float(os.environ.get("GEMINI_TIMEOUT_S", "180"))
+        self.client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=int(timeout_s * 1000)))
         self.modelo_chat = modelo_chat
         self.modelo_vision = modelo_vision
 
