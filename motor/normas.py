@@ -219,7 +219,9 @@ def revisar(lot, terreno, malla=None, ficha: dict | None = None) -> list[dict]:
 
     # 10. Calles sin salida
     if lot.stats.get("calles_sin_salida"):
-        filas.append(_fila("Calles sin salida", "RLUC Art. 87", "plazoleta de retorno", "por definir", "revisar",
+        d_ret = lot.stats.get("retorno_diametro_m")
+        filas.append(_fila("Calles sin salida", "RLUC Art. 87", "plazoleta de retorno",
+                           f"redondel de {d_ret:.0f} m" if d_ret else "por definir", "revisar",
                            "Los retornos (redondel, T o L) solo se permiten en vías de reparto y accesos rodados."))
     return filas
 

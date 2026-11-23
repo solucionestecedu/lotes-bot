@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 
 import config
 from motor import colindancia, exportar, lamina, modelo3d, normas, proyeccion, relieve
+from motor.calle_central import lindero_comun, lotificar_calle_central
 from motor.lotificacion import (LADOS, ErrorLotificacion, Parametros, franja_de_proteccion, lotificar,
                                 punto_de_acceso)
 from motor.rumbos import M2_POR_V2, ErrorRumbo, leer_rumbo, poligonal
@@ -43,6 +44,8 @@ class Sesion:
     candidatos: list = field(default_factory=list)             # varios terrenos leídos de un plano (dicts de Terreno)
     ficha: dict = field(default_factory=dict)                  # ficha del proyecto: zona, tipo, lote, acceso, quebradas...
     cumplimiento: list = field(default_factory=list)           # último cuadro de cumplimiento
+    partes: list = field(default_factory=list)                 # terrenos unidos: [{"origen", "anillo"}] relativos al centroide
+    lindero: list | None = None                                # lindero común de los terrenos unidos (relativo al centroide)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def get_terreno(self) -> Terreno | None:
@@ -140,6 +143,14 @@ HERRAMIENTAS = [
          "sin_quebradas": {"type": "boolean", "description": "true si el usuario confirma que no colinda con quebradas ni ríos"},
          "figura": {"type": "string", "enum": ["lotificacion", "condominio", "proindiviso", "no_se"],
                     "description": "cómo se va a vender: lotes con permiso de lotificación, condominio, o en proindiviso"},
+         "distribucion": {"type": "string", "enum": ["automatica", "calle_central"],
+                          "description": "calle_central = una sola calle por el medio (si se unieron dos terrenos, sobre el "
+                                         "lindero común) con lotes a los dos lados, retorno y área verde al fondo; para quintas "
+                                         "o pocos lotes, o cuando piden 'una calle en medio'"},
+         "lotes_por_lado": {"type": "array", "items": {"type": "integer"},
+                            "description": "[mínimo, máximo] de lotes a cada lado de la calle central (cuando se unieron dos "
+                                           "terrenos, cada lado es un terreno). '4 o 5 lotes por área' = [4, 5]. No calcules "
+                                           "tamaños: el motor reparte"},
          "agua": {"type": "string", "enum": ["anda", "pozo", "no_hay", "no_se"]},
          "luz": {"type": "string", "enum": ["si", "no", "no_se"]},
          "notas": {"type": "string"},
@@ -158,6 +169,14 @@ HERRAMIENTAS = [
                          "description": "pct_util = % del área útil (defecto, 10 %); por_lote = m² por lote"},
          "valor_verde": {"type": "number"},
          "angulo": {"type": "number", "description": "orientación de calles en grados; omitir para automático"},
+         "distribucion": {"type": "string", "enum": ["automatica", "calle_central"],
+                          "description": "calle_central = una sola calle por el medio (si se unieron dos terrenos, sobre el "
+                                         "lindero común) con lotes a los dos lados, retorno y área verde al fondo; para quintas "
+                                         "o pocos lotes, o cuando piden 'una calle en medio'"},
+         "lotes_por_lado": {"type": "array", "items": {"type": "integer"},
+                            "description": "[mínimo, máximo] de lotes a cada lado de la calle central (cuando se unieron dos "
+                                           "terrenos, cada lado es un terreno). '4 o 5 lotes por área' = [4, 5]. No calcules "
+                                           "tamaños: el motor reparte"},
          "aprovechar": {"type": "boolean", "description": "máximo aprovechamiento (por defecto sí): el área verde se saca "
                         "solo de lo que falta y de la tierra menos vendible; lo que sobra se vuelve lote o se suma a lotes"},
      })},
@@ -238,10 +257,14 @@ FLUJO:
       de protección de 1.5 veces la profundidad de la quebrada.
    e) ¿Cerrado con portón o abierto? ¿Cómo se va a vender: lotificación con permiso o condominio? ¿Hay agua (ANDA o
       pozo) y luz?
+   Si piden quintas, pocos lotes ("4 o 5 lotes por área") o "una calle en medio" → guarda distribucion=calle_central y
+   lotes_por_lado=[mín, máx]; tipo campestre. Con dos terrenos unidos la calle va sobre el lindero común y cada lado es
+   un terreno. No calcules el tamaño de lote tú: el motor reparte y te dice cuánto queda.
    Si el plano ya dice las colindancias (calle, quebrada), úsalas y solo confírmalas. Si el usuario dice "usa lo
    estándar", sigue con lo que tengas y di qué supusiste.
 5. PREDISEÑO → predisenar. Resume: número de lotes, tamaño promedio, área verde, y el cuadro de cumplimiento en corto
-   (qué cumple, qué no, qué falta revisar, con su artículo). Si algo no cumple, propone cómo arreglarlo y pregunta antes
+   (qué cumple, qué no, qué falta revisar, con su artículo). Con calle central di cuántos lotes quedan de cada lado (o de
+   cada terreno), su área y frente, y la alternativa que traiga "alternativas" (por ejemplo con 4 en vez de 5). Si algo no cumple, propone cómo arreglarlo y pregunta antes
    de rehacer.
 6. ENTREGABLES → generar_entregables: vista 3D, lámina PDF con el cuadro de cumplimiento, KML, DXF 2D y DXF 3D. Pide
    nombre del proyecto y municipio si no los tienes.
@@ -370,6 +393,7 @@ class Agente:
     # ------------------------------------------------------------------ herramientas: terreno
     def _informe_terreno(self, s: Sesion, t: Terreno, extra: dict | None = None) -> dict:
         s.set_terreno(t)
+        s.partes, s.lindero = [], None
         r = {"ok": True, "resumen": t.resumen(), "problemas": t.problemas(),
              "tramos": [f"{i}. {x.get('rumbo')} {x['dist']:.2f} m" for i, x in enumerate(t.tramos, 1)]}
         sos = t.sospechosos()
@@ -559,9 +583,16 @@ class Agente:
                 return {"ok": False, "error": "no encontré el lindero común de: " + ", ".join(b.origen for b in pendientes)}
         u = colindancia.unir(colocados)
         problemas = [f"{t.origen}: {p}" for t in cands for p in t.problemas()]
-        return self._informe_terreno(s, u, {"unidos": [t.origen for t in cands],
-                                            "areas_por_terreno_m2": [round(t.area, 2) for t in cands],
-                                            "problemas_de_los_originales": problemas})
+        r = self._informe_terreno(s, u, {"unidos": [t.origen for t in cands],
+                                         "areas_por_terreno_m2": [round(t.area, 2) for t in cands],
+                                         "problemas_de_los_originales": problemas})
+        cx, cy = u.centroide()
+        s.partes = [{"origen": t.origen, "anillo": [[x - cx, y - cy] for x, y in t.puntos]} for t in colocados]
+        lc = lindero_comun(colocados[0].puntos, colocados[1].puntos) if len(colocados) == 2 else None
+        s.lindero = [[x - cx, y - cy] for x, y in lc] if lc else None
+        if lc:
+            r["lindero_comun_m"] = round(sum(math.dist(a, b) for a, b in zip(lc, lc[1:])), 2)
+        return r
 
     # ------------------------------------------------------------------ ficha del proyecto
     def _faltantes(self, s: Sesion) -> list[str]:
@@ -569,7 +600,7 @@ class Agente:
         falta = []
         if not f.get("zona"):
             falta.append("zona (AMSS, urbana o fuera de centros poblados)")
-        if not f.get("lote_objetivo_m2") and not f.get("tipo"):
+        if not f.get("lote_objetivo_m2") and not f.get("tipo") and not f.get("lotes_por_lado"):
             falta.append("tipo de proyecto y tamaño de lote")
         if not f.get("acceso_lado"):
             falta.append("por qué lado llega la calle pública")
@@ -589,11 +620,17 @@ class Agente:
 
     def h_guardar_ficha(self, s: Sesion, salidas=None, **datos) -> dict:
         campos = {"zona", "tipo", "lote_objetivo_m2", "frente_m", "acceso_lado", "cerrado", "quebradas", "sin_quebradas",
-                  "figura", "agua", "luz", "notas"}
+                  "figura", "agua", "luz", "notas", "distribucion", "lotes_por_lado"}
         for k, v in datos.items():
             if k in campos and v is not None:
                 if k in ("acceso_lado",) and str(v).lower() not in LADOS:
                     return {"ok": False, "error": f"lado no reconocido: {v}"}
+                if k == "lotes_por_lado":
+                    try:
+                        v = sorted(int(x) for x in (v if isinstance(v, (list, tuple)) else [v]))
+                    except (TypeError, ValueError):
+                        return {"ok": False, "error": "lotes_por_lado debe ser [mínimo, máximo]"}
+                    v = [max(1, v[0]), max(1, v[-1])]
                 s.ficha[k] = v
         if s.ficha.get("quebradas"):
             s.ficha["sin_quebradas"] = False
@@ -645,11 +682,28 @@ class Agente:
                                                and not f.get("quebradas") and not f.get("sin_quebradas"))}
         return Parametros.de_dict(base), excluir, ficha_normas
 
+    def _modo(self, s: Sesion) -> tuple[str, list | None]:
+        lp, f = s.lotes_param or {}, s.ficha
+        modo = lp.get("distribucion") or f.get("distribucion") or "automatica"
+        rango = lp.get("lotes_por_lado") or f.get("lotes_por_lado")
+        if rango and modo == "automatica" and not lp.get("distribucion") and not f.get("distribucion"):
+            modo = "calle_central"  # pedir N lotes por lado ya implica la calle al centro
+        return modo, rango
+
     def _lotificar(self, s: Sesion):
         """Prediseño + revisión de normas. Si la norma pide equipamiento social, se reserva y se rehace."""
         t = s.get_terreno()
         m = s.get_malla()
         P, excluir, fn = self._parametros(s)
+        modo, rango = self._modo(s)
+        if modo == "calle_central":
+            cx, cy = t.centroide()
+            eje = [(x + cx, y + cy) for x, y in s.lindero] if s.lindero else None
+            partes = [{"origen": p["origen"], "anillo": [(x + cx, y + cy) for x, y in p["anillo"]]} for p in s.partes]
+            r = lotificar_calle_central(t.puntos, P, m, excluir, eje=eje, lotes_por_lado=rango or (4, 5), partes=partes)
+            filas = normas.revisar(r, t, m, fn)
+            s.cumplimiento = filas
+            return r, filas
         r = lotificar(t.puntos, P, m, excluir)
         if fn.get("zona"):
             req, _, claro = normas.equipamiento_requerido(fn["zona"], r.stats["lotes"], fn.get("tipo") or "residencial")
@@ -733,13 +787,14 @@ class Agente:
         t = s.get_terreno()
         if t is None:
             return {"ok": False, "error": "primero hay que cargar el terreno"}
-        validos = {k: v for k, v in params.items() if k in Parametros.__dataclass_fields__ and v is not None}
+        validos = {k: v for k, v in params.items()
+                   if (k in Parametros.__dataclass_fields__ or k in ("distribucion", "lotes_por_lado")) and v is not None}
         base = dict(s.lotes_param or {})
         base.update(validos)
         s.lotes_param = base
         r, filas = self._lotificar(s)
         st = r.stats
-        s.lotes_stats = {k: _r(v) for k, v in st.items()}
+        s.lotes_stats = {k: (_r(v) if isinstance(v, (int, float)) else v) for k, v in st.items()}
         inclinados = sum(1 for l in r.lotes if l["pendiente"] is not None and l["pendiente"] > 30)
         out = {"ok": True, "lotes": st["lotes"], "area_util_m2": _r(st["area_util"]),
                "area_calles_m2": _r(st["area_circulacion"]), "area_verde_m2": _r(st["area_verde"]),
@@ -759,6 +814,13 @@ class Agente:
                                 for f in filas],
                "resumen_cumplimiento": normas.resumen(filas),
                "supuestos": self._faltantes(s)}
+        if st.get("modo") == "calle_central":
+            out["distribucion"] = "calle_central"
+            out["por_lado"] = st["por_lado"]
+            out["retorno_diametro_m"] = _r(st["retorno_diametro_m"], 1)
+            out["lotes_detalle"] = [{"lote": l["id"], "terreno": l.get("terreno"), "area_m2": _r(l["area"], 1),
+                                     "frente_m": _r(l["frente"], 1)} for l in r.lotes]
+            out.pop("orientacion_calles_grados", None)
         if s.malla:
             out["lotes_con_pendiente_mayor_30pct"] = inclinados
             out["pendiente_media_de_calles_pct"] = _r(st["pendiente_calles_pct"], 1)

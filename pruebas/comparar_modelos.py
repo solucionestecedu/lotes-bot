@@ -25,15 +25,17 @@ from agente import ESQUEMA_PLANO, INSTRUCCION_PLANO, Agente, Sesion  # noqa: E40
 from motor.rumbos import leer_rumbo, leer_tramos  # noqa: E402
 from servicios.llm import GeminiLLM  # noqa: E402
 
-# (adjunto, texto, ubicación). La ubicación es la cuadrícula X 473300 / Y 288950 que trae el plano A.
+# (adjunto, texto, ubicación). Lo de quintas, la calle en medio y la quebrada al fondo es lo que dijo el usuario;
+# el lado de la quebrada (sur), su profundidad, el acceso (norte), la zona y los servicios son supuestos de prueba.
+# La ubicación es la cuadrícula X 473300 / Y 288950 que trae el plano A.
 PIN = (13.72121, -89.24686)
 GUION = [
     ("a", "Hola, este es el cuadro de rumbos del lote A.", None),
-    ("b", "Y este es el lote B, colinda con el A. Quiero hacer un solo proyecto con los dos.", None),
-    (None, "Sí, únelos en un solo proyecto. Te mando la ubicación.", PIN),
-    (None, "Está en zona urbana, fuera del AMSS. Residencial con lotes de unos 700 m². La calle llega por el norte. "
-           "Al sur hay una quebrada de unos 8 m de profundidad. Va cerrado con portón, se vende como lotificación, "
-           "hay agua de ANDA y luz.", None),
+    ("b", "Y este es el lote B, colinda con el A.", None),
+    (None, "Quiero unirlos, idealmente con una calle en medio de los dos terrenos. Haré 4 o 5 lotes por área, como "
+           "quintas. Al final el área protegida de la quebrada. Te mando la ubicación.", PIN),
+    (None, "La quebrada queda al sur, tiene unos 8 m de profundidad. La calle pública llega por el norte. Es zona urbana, "
+           "fuera del AMSS. Va cerrado con portón, se vende como lotificación, hay agua de ANDA y luz.", None),
     (None, "Dale, hazme el prediseño.", None),
     (None, "Mándame los planos.", None),
 ]
@@ -147,8 +149,11 @@ def prueba_conversacion(modelo: str, imagenes: dict) -> dict:
         turnos.append({"usuario": texto, "herramientas": usadas[n0:], "respuesta": respuesta, "archivos": archivos,
                        "preguntas": respuesta.count("?"), "segundos": round(time.time() - t0, 1)})
     t = s.get_terreno()
+    st = s.lotes_stats or {}
     final = {"terreno_m2": round(t.area, 2) if t else None, "vertices": len(t.puntos) if t else None,
-             "lotes": (s.lotes_stats or {}).get("lotes"), "ficha": {k: v for k, v in s.ficha.items() if k != "del_plano"},
+             "lotes": st.get("lotes"), "modo": st.get("modo", "automatica"),
+             "por_lado": [(pl.get("terreno"), pl.get("lotes"), pl.get("areas_m2")) for pl in st.get("por_lado", [])],
+             "ficha": {k: v for k, v in s.ficha.items() if k != "del_plano"},
              "cumplimiento": [(f["regla"], f["estado"]) for f in s.cumplimiento]}
     return {"turnos": turnos, "final": final, "uso": {"llamadas": c.llamadas, "tokens": c.tokens,
                                                         "segundos_modelo": round(c.segundos, 1)},

@@ -521,15 +521,23 @@ def generar(ruta: str, t: Terreno, malla: Malla | None = None, lot: Resultado | 
             regla = {"pct_util": f"{lot.parametros['valor_verde']:g} % del área útil",
                      "pct_total": f"{lot.parametros['valor_verde']:g} % del área total",
                      "por_lote": f"{lot.parametros['valor_verde']:g} m² por lote"}[lot.parametros["regla_verde"]]
+            pm = lot.parametros
+            if pm.get("modo") == "calle_central":
+                lados = " · ".join(f"{pl.get('terreno') or pl['lado']}: {pl['lotes']} lotes" for pl in s.get("por_lado", []))
+                linea_lote = (f"Calle central de {pm['calle']:g} m con retorno de {s.get('retorno_diametro_m', 0):.0f} m · "
+                              f"{lados} · frente mínimo {pm['frente_minimo']:g} m · área mínima {pm['area_minima']:g} m².")
+            else:
+                linea_lote = (f"Calle {pm['calle']:g} m · lote tipo {pm['frente']:g} × {pm['fondo']:g} m · "
+                              f"área mínima {pm['area_minima']:g} m².")
             y = _parrafos(h.p, x0, y - 1, "CRITERIOS USADOS", [
-                f"Calle {lot.parametros['calle']:g} m · lote tipo {lot.parametros['frente']:g} × {lot.parametros['fondo']:g} m · "
-                f"área mínima {lot.parametros['area_minima']:g} m².",
+                linea_lote,
                 f"Área verde requerida: {regla} = {_fmt(s['area_verde_requerida'])} m²; propuesta {_fmt(s['area_verde'] + s.get('area_proteccion', 0))} m²"
                 + (f" ({_fmt(s['area_verde'])} recreativa + {_fmt(s['area_proteccion'])} ecológica)" if s.get("area_proteccion") else "")
                 + (f"; {s['lotes_convertidos_a_verde']} lotes pasados a área verde" if s["lotes_convertidos_a_verde"] else "")
                 + (f"; {s['lotes_recortados_para_verde']} lotes recortados solo en lo necesario" if s.get("lotes_recortados_para_verde") else "")
                 + ". El área verde ecológica debe arborizarse (mín. 400 árboles/ha, RLUC Art. 63).",
-                f"Orientación de calles {lot.angulo:g}°; pendiente media a lo largo de la calle aprox. {s['pendiente_calles_pct']:.1f} %.",
+                (f"Orientación de calles {lot.angulo:g}°; " if pm.get("modo") != "calle_central" else "")
+                + f"pendiente media a lo largo de la calle aprox. {s['pendiente_calles_pct']:.1f} %.",
             ], PANEL_W - 6, 5.2, 3.0)
             if cumplimiento:
                 fc = [(f["regla"], f.get("ref", ""), f["requerido"], f["proyecto"], TEXTO_ESTADO.get(f["estado"], f["estado"]))
