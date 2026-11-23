@@ -147,6 +147,9 @@ HERRAMIENTAS = [
                           "description": "calle_central = una sola calle por el medio (si se unieron dos terrenos, sobre el "
                                          "lindero común) con lotes a los dos lados, retorno y área verde al fondo; para quintas "
                                          "o pocos lotes, o cuando piden 'una calle en medio'"},
+         "calle_sobre": {"type": "string", "enum": ["terreno_mas_grande", "terreno_mas_chico", "centro_del_lindero"],
+                         "description": "con dos terrenos unidos y calle central: en qué terreno va la calle, pegada al "
+                                        "lindero común (por defecto en el más grande)"},
          "lotes_por_lado": {"type": "array", "items": {"type": "integer"},
                             "description": "[mínimo, máximo] de lotes a cada lado de la calle central (cuando se unieron dos "
                                            "terrenos, cada lado es un terreno). '4 o 5 lotes por área' = [4, 5]. No calcules "
@@ -173,6 +176,9 @@ HERRAMIENTAS = [
                           "description": "calle_central = una sola calle por el medio (si se unieron dos terrenos, sobre el "
                                          "lindero común) con lotes a los dos lados, retorno y área verde al fondo; para quintas "
                                          "o pocos lotes, o cuando piden 'una calle en medio'"},
+         "calle_sobre": {"type": "string", "enum": ["terreno_mas_grande", "terreno_mas_chico", "centro_del_lindero"],
+                         "description": "con dos terrenos unidos y calle central: en qué terreno va la calle, pegada al "
+                                        "lindero común (por defecto en el más grande)"},
          "lotes_por_lado": {"type": "array", "items": {"type": "integer"},
                             "description": "[mínimo, máximo] de lotes a cada lado de la calle central (cuando se unieron dos "
                                            "terrenos, cada lado es un terreno). '4 o 5 lotes por área' = [4, 5]. No calcules "
@@ -259,7 +265,8 @@ FLUJO:
       pozo) y luz?
    Si piden quintas, pocos lotes ("4 o 5 lotes por área") o "una calle en medio" → guarda distribucion=calle_central y
    lotes_por_lado=[mín, máx]; tipo campestre. Con dos terrenos unidos la calle va sobre el lindero común y cada lado es
-   un terreno. No calcules el tamaño de lote tú: el motor reparte y te dice cuánto queda.
+   un terreno; por defecto la calle va completa dentro del terreno más grande, pegada al lindero (calle_sobre). No
+   calcules el tamaño de lote tú: el motor reparte y te dice cuánto queda.
    Si el plano ya dice las colindancias (calle, quebrada), úsalas y solo confírmalas. Si el usuario dice "usa lo
    estándar", sigue con lo que tengas y di qué supusiste.
 5. PREDISEÑO → predisenar. Resume: número de lotes, tamaño promedio, área verde, y el cuadro de cumplimiento en corto
@@ -493,7 +500,7 @@ class Agente:
         previos = previos or []
         if len(crudos) == 1 and not previos:
             try:
-                t, extra, conocidas = self._terreno_de_lectura(crudos[0], sistema, origen)
+                t, extra, conocidas = self._terreno_de_lectura(crudos[0], sistema, crudos[0].get("nombre") or "Terreno 1")
             except ValueError as e:
                 return {"ok": False, "error": str(e)}
             s.candidatos = []
@@ -508,7 +515,9 @@ class Agente:
             informes.append({"numero": len(terrenos), "nombre": t.origen or f"Terreno {len(terrenos)}",
                              "resumen": t.resumen(), "problemas": t.problemas(), "ya_estaba": True})
         for k, c in enumerate(crudos, 1):
-            nombre = c.get("nombre") or f"Terreno {k}"
+            nombre = c.get("nombre") or f"Terreno {len(terrenos) + 1}"
+            if any(x.origen == nombre for x in terrenos):  # dos fotos sin nombre o con el mismo nombre
+                nombre = f"{nombre} ({len(terrenos) + 1})"
             try:
                 t, extra, _ = self._terreno_de_lectura(c, sistema, nombre)
             except ValueError as e:
@@ -620,7 +629,7 @@ class Agente:
 
     def h_guardar_ficha(self, s: Sesion, salidas=None, **datos) -> dict:
         campos = {"zona", "tipo", "lote_objetivo_m2", "frente_m", "acceso_lado", "cerrado", "quebradas", "sin_quebradas",
-                  "figura", "agua", "luz", "notas", "distribucion", "lotes_por_lado"}
+                  "figura", "agua", "luz", "notas", "distribucion", "lotes_por_lado", "calle_sobre"}
         for k, v in datos.items():
             if k in campos and v is not None:
                 if k in ("acceso_lado",) and str(v).lower() not in LADOS:
@@ -700,7 +709,10 @@ class Agente:
             cx, cy = t.centroide()
             eje = [(x + cx, y + cy) for x, y in s.lindero] if s.lindero else None
             partes = [{"origen": p["origen"], "anillo": [(x + cx, y + cy) for x, y in p["anillo"]]} for p in s.partes]
-            r = lotificar_calle_central(t.puntos, P, m, excluir, eje=eje, lotes_por_lado=rango or (4, 5), partes=partes)
+            sobre = (s.lotes_param or {}).get("calle_sobre") or s.ficha.get("calle_sobre") or "terreno_mas_grande"
+            sobre = {"terreno_mas_grande": "mayor", "terreno_mas_chico": "menor"}.get(sobre, "lindero")
+            r = lotificar_calle_central(t.puntos, P, m, excluir, eje=eje, lotes_por_lado=rango or (4, 5), partes=partes,
+                                        calle_sobre=sobre)
             filas = normas.revisar(r, t, m, fn)
             s.cumplimiento = filas
             return r, filas
@@ -788,7 +800,8 @@ class Agente:
         if t is None:
             return {"ok": False, "error": "primero hay que cargar el terreno"}
         validos = {k: v for k, v in params.items()
-                   if (k in Parametros.__dataclass_fields__ or k in ("distribucion", "lotes_por_lado")) and v is not None}
+                   if (k in Parametros.__dataclass_fields__ or k in ("distribucion", "lotes_por_lado", "calle_sobre"))
+                   and v is not None}
         base = dict(s.lotes_param or {})
         base.update(validos)
         s.lotes_param = base
@@ -818,6 +831,8 @@ class Agente:
             out["distribucion"] = "calle_central"
             out["por_lado"] = st["por_lado"]
             out["retorno_diametro_m"] = _r(st["retorno_diametro_m"], 1)
+            if st.get("calle_dentro_de"):
+                out["calle_dentro_de"] = st["calle_dentro_de"]
             out["lotes_detalle"] = [{"lote": l["id"], "terreno": l.get("terreno"), "area_m2": _r(l["area"], 1),
                                      "frente_m": _r(l["frente"], 1)} for l in r.lotes]
             out.pop("orientacion_calles_grados", None)

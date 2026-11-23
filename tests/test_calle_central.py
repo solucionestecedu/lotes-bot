@@ -108,6 +108,7 @@ def test_flujo_quintas_con_calle_en_medio(tmp_path):
     assert out["ficha"]["lotes_por_lado"] == [4, 5] and out["falta_preguntar"] == []
     out = json.loads(ag.atender(s, "lotes")[0]["texto"])
     assert out["distribucion"] == "calle_central" and 8 <= out["lotes"] <= 10
+    assert out["calle_dentro_de"] == "Lote B"  # el terreno más grande
     assert {pl["terreno"] for pl in out["por_lado"]} == {"Lote A", "Lote B"}
     assert all(d["terreno"] in ("Lote A", "Lote B") for d in out["lotes_detalle"])
     estados = {f["regla"]: f for f in out["cumplimiento"]}
@@ -130,3 +131,17 @@ def test_calle_central_con_relieve_y_3d(tmp_path, caso_chiltiupan):
     escena = modelo3d.construir(t, m, r)
     modelo3d.dxf(str(tmp_path / "q.dxf"), escena)
     assert (tmp_path / "q.dxf").stat().st_size > 10000
+
+
+def test_calle_dentro_del_terreno_mas_grande(union):
+    a, b2, u = union
+    P = Parametros.de_dict(dict(frente=20, fondo=35, area_minima=630, lado_acceso="norte"))
+    franja = franja_de_proteccion(u.puntos, "sur", 12.0)
+    r = lotificar_calle_central(u.puntos, P, None, [franja], eje=lindero_comun(a.puntos, b2.puntos), lotes_por_lado=(4, 5),
+                                partes=[{"origen": "A", "anillo": a.puntos}, {"origen": "B", "anillo": b2.puntos}],
+                                calle_sobre="mayor")
+    calle = r.calles[0]
+    assert r.stats["calle_dentro_de"] == "B"
+    assert calle.intersection(Polygon(a.puntos)).area < 1.0  # ni la calle ni el redondel pisan el terreno A
+    lados = {pl["terreno"]: pl for pl in r.stats["por_lado"]}
+    assert lados["B"]["lotes"] == 5 and 4 <= lados["A"]["lotes"] <= 5

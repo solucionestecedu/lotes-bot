@@ -66,17 +66,17 @@ def ejes_candidatos(terreno: Polygon, P: Parametros) -> list[list[tuple[float, f
 
 def lotificar_calle_central(anillo, P: Parametros | None = None, malla: Malla | None = None, excluir: list | None = None,
                             eje: list | None = None, lotes_por_lado=(4, 5), partes: list | None = None,
-                            radio_retorno: float | None = None) -> Resultado:
+                            radio_retorno: float | None = None, calle_sobre: str = "lindero") -> Resultado:
     """Calle central sobre `eje` (p. ej. el lindero común). Sin eje se prueban los candidatos y gana el que deja
     más lotes dentro del rango pedido y más área vendible."""
     if eje is not None:
-        return _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio_retorno)
+        return _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio_retorno, calle_sobre)
     P = P or Parametros()
     terreno = Polygon(anillo).buffer(0)
     mejor, error = None, None
     for e in ejes_candidatos(_mayor(terreno) if terreno.geom_type != "Polygon" else terreno, P):
         try:
-            r = _calle_central(anillo, P, malla, excluir, e, lotes_por_lado, partes, radio_retorno)
+            r = _calle_central(anillo, P, malla, excluir, e, lotes_por_lado, partes, radio_retorno, "lindero")
         except ErrorLotificacion as ex:
             error = ex
             continue
@@ -89,7 +89,7 @@ def lotificar_calle_central(anillo, P: Parametros | None = None, malla: Malla | 
     return mejor[1]
 
 
-def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio_retorno) -> Resultado:
+def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio_retorno, calle_sobre="lindero") -> Resultado:
     P = P or Parametros()
     W = P.calle
     nmin, nmax = sorted(int(x) for x in (list(lotes_por_lado) * 2)[:2])
@@ -128,6 +128,24 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
         prot = unary_union(protecciones)
         if Point(pts[0]).distance(prot) < Point(pts[-1]).distance(prot):
             pts.reverse()
+    # calle_sobre: "lindero" = el eje es el lindero (media calle en cada terreno); "mayor"/"menor" = toda la calle
+    # dentro del terreno más grande o más chico, pegada al lindero (la tierra de la calle la pone un solo dueño)
+    dentro_de = None
+    if calle_sobre in ("mayor", "menor") and partes and len(partes) >= 2 and len(pts) >= 2:
+        polys = sorted(((Polygon(p["anillo"]).buffer(0), p["origen"]) for p in partes), key=lambda x: x[0].area)
+        destino, dentro_de = polys[-1] if calle_sobre == "mayor" else polys[0]
+        linea_eje = LineString(pts)
+        cerca = linea_eje.interpolate(0.5, normalized=True)
+        c_ = destino.centroid
+        a_, b_ = pts[0], pts[-1]
+        izquierda = (b_[0] - a_[0]) * (c_.y - a_[1]) - (b_[1] - a_[1]) * (c_.x - a_[0]) > 0
+        movida = linea_eje.offset_curve(W / 2 if izquierda else -W / 2, join_style=2)
+        if movida.geom_type == "LineString" and movida.length > 1 and movida.distance(cerca) < W:
+            pts = [tuple(c) for c in movida.coords]
+            if math.dist(pts[0], a_) > math.dist(pts[-1], a_):
+                pts.reverse()
+        else:
+            dentro_de = None
     ux, uy = pts[-1][0] - pts[0][0], pts[-1][1] - pts[0][1]
     largo = math.hypot(ux, uy)
     if largo < 1:
@@ -147,6 +165,10 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
         return affinity.rotate(g, deg, origin=C)
 
     Zr, Tr = rot(Z), rot(terreno_total)
+    # con la calle dentro de un solo terreno, el redondel también se corre hacia ese terreno
+    corrimiento = 0.0
+    if dentro_de is not None:
+        c_dest = rot(next(Polygon(p["anillo"]).buffer(0) for p in partes if p["origen"] == dentro_de).centroid)
     linea = ext.intersection(terreno_total)
     piezas_l = [g for g in getattr(linea, "geoms", [linea]) if g.geom_type == "LineString" and g.length > 1]
     if not piezas_l:
@@ -172,11 +194,14 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
                 return y0 if x1 == x0 else y0 + (y1 - y0) * (x - x0) / (x1 - x0)
         return cs[-1][1]
 
+    if dentro_de is not None:
+        corrimiento = max(0.0, r_ret - W / 2) * (1 if c_dest.y > y_eje(c_dest.x) else -1)
+
     def calle_hasta(x_r):
         """Calle del acceso hasta x_r con un redondel de retorno centrado ahí."""
         coords = [(x_ini - 2, y_eje(x_ini))] + [c for c in xs_l if x_ini < c[0] < x_r] + [(x_r, y_eje(x_r))]
         tira = LineString(coords).buffer(W / 2, cap_style=2)
-        redondel = Point(x_r, y_eje(x_r)).buffer(r_ret, quad_segs=12)
+        redondel = Point(x_r, y_eje(x_r) + corrimiento).buffer(r_ret, quad_segs=12)
         return _mayor(unary_union([tira, redondel]).intersection(Zr))
 
     def armar(x_corte):
@@ -347,7 +372,7 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
     # ---- máximo aprovechamiento: el área verde que sobra (sobre todo la que no da a la calle) se suma
     # al lote vecino; la que se queda es la que rodea el retorno, para que el parque tenga entrada.
     x_r = max(x_ini + r_ret, min(x_corte + r_ret, x_fin - r_ret))
-    centro_ret = Point(x_r, y_eje(x_r))
+    centro_ret = Point(x_r, y_eje(x_r) + corrimiento)
     sumado = 0.0
     if P.aprovechar:
         def meta_actual():
@@ -457,6 +482,7 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
             "lotes_de_area_sobrante": 0, "area_sobrante_sumada_a_lotes": sumado,
             "lotes_recortados_para_verde": 0, "lotes_partidos": 0,
             "modo": "calle_central", "retorno_diametro_m": 2 * r_ret, "por_lado": por_lado,
+            "calle_dentro_de": dentro_de,
         },
         parametros={"calle": W, "frente_minimo": round(frente_min, 1), "area_minima": P.area_minima,
                     "regla_verde": P.regla_verde, "valor_verde": P.valor_verde, "modo": "calle_central",
