@@ -470,7 +470,7 @@ def generar(ruta: str, t: Terreno, malla: Malla | None = None, lot: Resultado | 
             for p in lot.protecciones:
                 h.ax.add_patch(_patch(p, fc=COLOR_PROTECCION, ec="#3d6b2e", lw=0.4, zorder=3, hatch="////"))
                 c = p.representative_point()
-                _t(h.ax, c.x, c.y, "ZONA DE PROTECCIÓN", 4.6, ha="center", color="#1f3d17", zorder=8,
+                _t(h.ax, c.x, c.y, "ÁREA VERDE ECOLÓGICA\n(zona de protección)", 4.4, ha="center", color="#1f3d17", zorder=8,
                    bbox=dict(boxstyle="square,pad=0.15", fc="white", ec="none", alpha=0.75))
             for e in lot.equipamiento:
                 h.ax.add_patch(_patch(e["poly"], fc=COLOR_EQUIP, ec="#3e6d99", lw=0.45, zorder=4))
@@ -494,7 +494,7 @@ def generar(ruta: str, t: Terreno, malla: Malla | None = None, lot: Resultado | 
                 if not any(v["de_lote"] for v in lot.verdes):
                     items = [it for it in items if not it[0].startswith("Área verde tomada")]
                 if lot.protecciones:
-                    items.insert(4, ("Zona de protección (quebrada / río)", dict(fc=COLOR_PROTECCION, ec="#3d6b2e", lw=0.4, hatch="////")))
+                    items.insert(4, ("Área verde ecológica: zona de protección de quebrada", dict(fc=COLOR_PROTECCION, ec="#3d6b2e", lw=0.4, hatch="////")))
                 if lot.equipamiento:
                     items.insert(4, ("Equipamiento social (EQ)", dict(fc=COLOR_EQUIP, ec="#3e6d99", lw=0.45)))
                 if cs:
@@ -506,7 +506,7 @@ def generar(ruta: str, t: Terreno, malla: Malla | None = None, lot: Resultado | 
             filas_areas = [
                 ("Lotes", s["lotes"], _fmt(s["area_util"]), f"{s['area_util'] / tot * 100:.1f} %"),
                 ("Calles", "", _fmt(s["area_circulacion"]), f"{s['area_circulacion'] / tot * 100:.1f} %"),
-                ("Área verde", len(lot.verdes), _fmt(s["area_verde"]), f"{s['area_verde'] / tot * 100:.1f} %"),
+                ("Área verde recreativa", len(lot.verdes), _fmt(s["area_verde"]), f"{s['area_verde'] / tot * 100:.1f} %"),
                 ("Remanentes", len(lot.remanentes), _fmt(s["area_remanente"]), f"{s['area_remanente'] / tot * 100:.1f} %"),
                 ("TOTAL", "", _fmt(tot), "100.0 %"),
             ]
@@ -514,7 +514,7 @@ def generar(ruta: str, t: Terreno, malla: Malla | None = None, lot: Resultado | 
                 filas_areas.insert(3, ("Equipamiento social", len(lot.equipamiento), _fmt(s["area_equipamiento"]),
                                        f"{s['area_equipamiento'] / tot * 100:.1f} %"))
             if s.get("area_proteccion"):
-                filas_areas.insert(3, ("Zona de protección", len(lot.protecciones), _fmt(s["area_proteccion"]),
+                filas_areas.insert(3, ("Área verde ecológica", len(lot.protecciones), _fmt(s["area_proteccion"]),
                                        f"{s['area_proteccion'] / tot * 100:.1f} %"))
             y, _ = _tabla(h.p, x0, MARCO[3] - 3, [("USO", 40, "left"), ("CANT.", 18, "center"), ("ÁREA (m²)", 42, "right"), ("%", 34, "right")],
                           filas_areas, 4.2, "CUADRO DE ÁREAS")
@@ -524,8 +524,11 @@ def generar(ruta: str, t: Terreno, malla: Malla | None = None, lot: Resultado | 
             y = _parrafos(h.p, x0, y - 1, "CRITERIOS USADOS", [
                 f"Calle {lot.parametros['calle']:g} m · lote tipo {lot.parametros['frente']:g} × {lot.parametros['fondo']:g} m · "
                 f"área mínima {lot.parametros['area_minima']:g} m².",
-                f"Área verde requerida: {regla} = {_fmt(s['area_verde_requerida'])} m²; propuesta {_fmt(s['area_verde'])} m²"
-                + (f" ({s['lotes_convertidos_a_verde']} lotes inclinados pasados a área verde)." if s["lotes_convertidos_a_verde"] else "."),
+                f"Área verde requerida: {regla} = {_fmt(s['area_verde_requerida'])} m²; propuesta {_fmt(s['area_verde'] + s.get('area_proteccion', 0))} m²"
+                + (f" ({_fmt(s['area_verde'])} recreativa + {_fmt(s['area_proteccion'])} ecológica)" if s.get("area_proteccion") else "")
+                + (f"; {s['lotes_convertidos_a_verde']} lotes pasados a área verde" if s["lotes_convertidos_a_verde"] else "")
+                + (f"; {s['lotes_recortados_para_verde']} lotes recortados solo en lo necesario" if s.get("lotes_recortados_para_verde") else "")
+                + ". El área verde ecológica debe arborizarse (mín. 400 árboles/ha, RLUC Art. 63).",
                 f"Orientación de calles {lot.angulo:g}°; pendiente media a lo largo de la calle aprox. {s['pendiente_calles_pct']:.1f} %.",
             ], PANEL_W - 6, 5.2, 3.0)
             if cumplimiento:

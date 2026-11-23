@@ -206,6 +206,17 @@ def revisar(lot, terreno, malla=None, ficha: dict | None = None) -> list[dict]:
                            f"{lot.stats['accesos']} accesos", "revisar",
                            "Para un proyecto cerrado conviene unir las calles por dentro y dejar una sola entrada."))
 
+    # 11. Figura de venta
+    if ficha.get("figura") == "proindiviso":
+        filas.append(_fila("Figura de venta", "Ley Esp. de Lotificaciones Art. 25", "lotificación o condominio con permiso",
+                           "venta en proindiviso", "no_cumple",
+                           "Vender porciones en proindiviso para formar lotes se presume lotificación, y la Ley de "
+                           "Delimitación de Derechos Proindivisos obliga al notario y al registrador a detenerla."))
+    elif ficha.get("figura") == "condominio":
+        filas.append(_fila("Área verde en condominio", "Reglamento LDOTAMSS Art. 65" if zona == "amss" else "Por confirmar con la DOT",
+                           "área común de los condóminos", "área común", "cumple" if zona == "amss" else "revisar",
+                           "En condominio el área verde no se dona: queda como área común y la mantienen los dueños."))
+
     # 10. Calles sin salida
     if lot.stats.get("calles_sin_salida"):
         filas.append(_fila("Calles sin salida", "RLUC Art. 87", "plazoleta de retorno", "por definir", "revisar",

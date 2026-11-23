@@ -135,7 +135,8 @@ class Guion(LLM):
         if t == "ficha":
             return Respuesta(llamadas=[{"nombre": "guardar_ficha", "args": {
                 "zona": "urbano", "tipo": "residencial", "lote_objetivo_m2": 700, "acceso_lado": "norte", "cerrado": True,
-                "quebradas": [{"tipo": "quebrada", "lado": "sur", "profundidad_m": 8}], "agua": "anda", "luz": "si"}}])
+                "quebradas": [{"tipo": "quebrada", "lado": "sur", "profundidad_m": 8}], "figura": "lotificacion",
+                "agua": "anda", "luz": "si"}}])
         if t == "lotes":
             return Respuesta(llamadas=[{"nombre": "predisenar", "args": {}}])
         if t == "lamina":
@@ -172,7 +173,7 @@ def test_flujo_dos_terrenos_unidos(tmp_path):
     salidas = ag.atender(s, "lamina")
     pdf = next(o["ruta"] for o in salidas if o.get("nombre", "").endswith(".pdf"))
     texto = PdfReader(pdf).pages[1].extract_text()
-    assert "CUADRO DE CUMPLIMIENTO" in texto and "RLUC 50 a)" in texto and "ZONA DE PROTECCIÓN" in texto
+    assert "CUADRO DE CUMPLIMIENTO" in texto and "RLUC 50 a)" in texto and "ÁREA VERDE ECOLÓGICA" in texto
 
 
 def test_elegir_uno(tmp_path):
@@ -239,3 +240,32 @@ def test_lotes_cortados_por_area_parecida(ab):
     r = lotificar(a.puntos, Parametros(frente=20, fondo=35, area_minima=630))
     areas = [l["area"] for l in r.lotes]
     assert len(areas) >= 5 and min(areas) >= 0.95 * 630
+
+
+def test_maximo_aprovechamiento_en_lote_a(ab):
+    """Con aprovechamiento se cumple igual el área verde, pero se vende más terreno."""
+    a, _ = ab
+    prot = franja_de_proteccion(a.puntos, "sur", 12)
+    base = dict(frente=20, fondo=35, area_minima=630, entrada=punto_de_acceso(a.puntos, "norte"), lado_acceso="norte")
+    sin = lotificar(a.puntos, Parametros(aprovechar=False, **base), None, excluir=[prot])
+    con = lotificar(a.puntos, Parametros(aprovechar=True, **base), None, excluir=[prot])
+    assert con.stats["area_util"] > sin.stats["area_util"] + 500
+    assert con.stats["lotes"] >= sin.stats["lotes"]
+    for r in (sin, con):
+        filas = normas.revisar(r, a, None, {"zona": "urbano"})
+        assert {f["regla"]: f["estado"] for f in filas}["Área verde recreativa"] == "cumple"
+
+
+def test_recorte_saca_solo_lo_que_falta(caso_chiltiupan):
+    t, m, _ = caso_chiltiupan
+    r = lotificar(t.puntos, Parametros(regla_verde="por_lote", valor_verde=12.5), m)
+    req = r.stats["area_verde_requerida"]
+    assert r.stats["area_verde"] >= req and r.stats["area_verde"] < req * 1.6
+
+
+def test_proindiviso_no_cumple(ab):
+    a, _ = ab
+    r = lotificar(a.puntos, Parametros())
+    filas = normas.revisar(r, a, None, {"zona": "urbano", "figura": "proindiviso"})
+    f = next(f for f in filas if f["regla"] == "Figura de venta")
+    assert f["estado"] == "no_cumple" and "notario" in f["nota"]

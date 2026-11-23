@@ -138,6 +138,8 @@ HERRAMIENTAS = [
              "profundidad_m": {"type": "number", "description": "profundidad aproximada (para quebradas y taludes)"}},
              ["tipo", "lado"])},
          "sin_quebradas": {"type": "boolean", "description": "true si el usuario confirma que no colinda con quebradas ni ríos"},
+         "figura": {"type": "string", "enum": ["lotificacion", "condominio", "proindiviso", "no_se"],
+                    "description": "cómo se va a vender: lotes con permiso de lotificación, condominio, o en proindiviso"},
          "agua": {"type": "string", "enum": ["anda", "pozo", "no_hay", "no_se"]},
          "luz": {"type": "string", "enum": ["si", "no", "no_se"]},
          "notas": {"type": "string"},
@@ -156,6 +158,8 @@ HERRAMIENTAS = [
                          "description": "pct_util = % del área útil (defecto, 10 %); por_lote = m² por lote"},
          "valor_verde": {"type": "number"},
          "angulo": {"type": "number", "description": "orientación de calles en grados; omitir para automático"},
+         "aprovechar": {"type": "boolean", "description": "máximo aprovechamiento (por defecto sí): el área verde se saca "
+                        "solo de lo que falta y de la tierra menos vendible; lo que sobra se vuelve lote o se suma a lotes"},
      })},
     {"nombre": "generar_entregables", "descripcion": "Genera la lámina en PDF (planialtimétrico y, si hay prediseño, la "
      "lotificación), el KML para Google Earth, el DXF 2D para AutoCAD/Civil 3D y, si ya hay relieve, una vista 3D en "
@@ -232,7 +236,8 @@ FLUJO:
    c) Acceso: ¿por qué lado llega la calle pública?
    d) Quebradas, ríos o taludes: ¿colinda con alguno, de qué lado y qué tan profundo más o menos? La ley pide una franja
       de protección de 1.5 veces la profundidad de la quebrada.
-   e) ¿Cerrado con portón o abierto? ¿Hay agua (ANDA o pozo) y luz?
+   e) ¿Cerrado con portón o abierto? ¿Cómo se va a vender: lotificación con permiso o condominio? ¿Hay agua (ANDA o
+      pozo) y luz?
    Si el plano ya dice las colindancias (calle, quebrada), úsalas y solo confírmalas. Si el usuario dice "usa lo
    estándar", sigue con lo que tengas y di qué supusiste.
 5. PREDISEÑO → predisenar. Resume: número de lotes, tamaño promedio, área verde, y el cuadro de cumplimiento en corto
@@ -240,6 +245,18 @@ FLUJO:
    de rehacer.
 6. ENTREGABLES → generar_entregables: vista 3D, lámina PDF con el cuadro de cumplimiento, KML, DXF 2D y DXF 3D. Pide
    nombre del proyecto y municipio si no los tienes.
+
+MÁXIMO APROVECHAMIENTO (lo que buscan los desarrolladores):
+- predisenar ya lo hace por defecto: pone el área verde en la tierra menos vendible (la franja de la quebrada cuenta como
+  área verde ecológica, hasta el 40 % del área verde total; el 60 % debe ser recreativa), recorta de un lote solo lo que
+  falta en vez de sacrificar lotes completos, y lo que sobra lo suma a lotes o lo vuelve lote. Explica estas decisiones
+  con los números de "aprovechamiento".
+- Palancas que puedes explicar: el tamaño y frente de lote, el lado de acceso, unir terrenos colindantes, y la zona (fuera
+  de centros poblados la ley pide 12.5 m² por lote en vez del 10 % del área útil; pero la zona la define la autoridad,
+  no se escoge).
+- Vender en proindiviso para evitar la lotificación NO es una salida: la ley lo presume lotificación y el notario y el
+  registrador deben detenerlo. Si lo proponen, dilo claro y ofrece las figuras formales (lotificación o condominio).
+- Nunca sugieras evadir normas.
 
 REGLAS:
 - Nunca inventes ni calcules números: todos salen de las herramientas. Si no hay dato, dilo.
@@ -564,13 +581,15 @@ class Agente:
                 falta.append(f"profundidad de la {q['tipo']} del lado {q.get('lado')}")
         if "cerrado" not in f:
             falta.append("si es cerrado con portón")
+        if not f.get("figura"):
+            falta.append("cómo se va a vender (lotificación o condominio)")
         if not f.get("agua"):
             falta.append("agua y luz")
         return falta
 
     def h_guardar_ficha(self, s: Sesion, salidas=None, **datos) -> dict:
         campos = {"zona", "tipo", "lote_objetivo_m2", "frente_m", "acceso_lado", "cerrado", "quebradas", "sin_quebradas",
-                  "agua", "luz", "notas"}
+                  "figura", "agua", "luz", "notas"}
         for k, v in datos.items():
             if k in campos and v is not None:
                 if k in ("acceso_lado",) and str(v).lower() not in LADOS:
@@ -621,6 +640,7 @@ class Agente:
             prot.append({"tipo": q.get("tipo"), "lado": q.get("lado"), "profundidad": q.get("profundidad_m"),
                          "ancho": round(ancho, 2)})
         ficha_normas = {"zona": zona, "tipo": f.get("tipo"), "protecciones": prot, "cerrado": f.get("cerrado"),
+                        "figura": f.get("figura"),
                         "quebrada_sin_datos": (any(c.get("tipo") in ("quebrada", "rio") for c in f.get("del_plano", []))
                                                and not f.get("quebradas") and not f.get("sin_quebradas"))}
         return Parametros.de_dict(base), excluir, ficha_normas
@@ -729,6 +749,12 @@ class Agente:
                "aprovechamiento_pct": _r(st["area_util"] / st["area_total"] * 100, 1),
                "parametros": r.parametros, "orientacion_calles_grados": r.angulo,
                "area_proteccion_m2": _r(st["area_proteccion"]), "area_equipamiento_m2": _r(st["area_equipamiento"]),
+               "aprovechamiento": {"vendible_pct": _r(st["area_util"] / st["area_total"] * 100, 1),
+                                   "lotes_recortados_para_area_verde": st.get("lotes_recortados_para_verde", 0),
+                                   "lotes_completos_pasados_a_verde": st["lotes_convertidos_a_verde"],
+                                   "lotes_nuevos_de_area_sobrante": st.get("lotes_de_area_sobrante", 0),
+                                   "m2_sobrantes_sumados_a_lotes": _r(st.get("area_sobrante_sumada_a_lotes", 0)),
+                                   "lotes_grandes_partidos": st.get("lotes_partidos", 0)},
                "cumplimiento": [{k: f[k] for k in ("regla", "base", "requerido", "proyecto", "estado", "nota") if f.get(k)}
                                 for f in filas],
                "resumen_cumplimiento": normas.resumen(filas),

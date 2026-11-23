@@ -37,13 +37,21 @@ class Parametros:
     verde_minimo: float = 100.0     # remanente mínimo para contar como área verde
     pct_recreativa: float = 60.0    # parte del área verde que debe ser recreativa (RLUC Art. 59)
     equipamiento_m2: float = 0.0    # terreno para equipamiento social (escuela, casa comunal)
+    aprovechar: bool = True         # el área verde que sobra se vuelve lote o se suma a un lote vecino
 
     @classmethod
     def de_dict(cls, d: dict | None) -> "Parametros":
         p = cls()
         for k, v in (d or {}).items():
             if hasattr(p, k) and v is not None:
-                setattr(p, k, tuple(v) if k == "entrada" else (v if k in ("regla_verde", "lado_acceso") else float(v)))
+                if k == "entrada":
+                    setattr(p, k, tuple(v))
+                elif k in ("regla_verde", "lado_acceso"):
+                    setattr(p, k, v)
+                elif k == "aprovechar":
+                    setattr(p, k, bool(v))
+                else:
+                    setattr(p, k, float(v))
         return p
 
 
@@ -419,17 +427,138 @@ def lotificar(anillo, P: Parametros | None = None, malla: Malla | None = None, e
             return l.pendiente
         return abs(l.area - F * D) / (F * D) + abs(l.x - xs) / 1e6
 
-    convertidos = 0
+    calle_b = circ.buffer(0.3)
+    prot_r = unary_union([rotar(p, deg) for p in protecciones]) if protecciones else None
+
+    def recortar(l, falta, frente_pedazo=3.0):
+        """Saca `falta` m² de un lado del lote (corte paralelo al fondo); el pedazo queda con frente a la calle,
+        y el resto sigue siendo un lote válido. Devuelve (pedazo, resto) o None."""
+        minx, miny, maxx, maxy = l.poly.bounds
+        mejor = None
+        for lado in (-1, 1):
+            lo, hi = minx, maxx
+            for _ in range(32):
+                mid = (lo + hi) / 2
+                caja = box(minx - 1, miny - 1, mid, maxy + 1) if lado < 0 else box(mid, miny - 1, maxx + 1, maxy + 1)
+                a = l.poly.intersection(caja).area
+                if (a < falta) == (lado < 0):
+                    lo = mid
+                else:
+                    hi = mid
+            corte = (lo + hi) / 2
+            caja = box(minx - 1, miny - 1, corte, maxy + 1) if lado < 0 else box(corte, miny - 1, maxx + 1, maxy + 1)
+            pedazo, resto = _mayor(l.poly.intersection(caja)), _mayor(l.poly.difference(caja))
+            if pedazo is None or resto is None or resto.area < P.area_minima:
+                continue
+            fr_resto = resto.boundary.intersection(calle_b).length
+            if fr_resto < 0.6 * F or pedazo.boundary.intersection(calle_b).length < frente_pedazo:
+                continue
+            junto_quebrada = prot_r is not None and pedazo.distance(prot_r) < 1.0
+            clave = (junto_quebrada, -abs(pedazo.area - falta))
+            if mejor is None or clave > mejor[0]:
+                mejor = (clave, pedazo, resto, fr_resto)
+        return None if mejor is None else mejor[1:]
+
+    convertidos, recortados = 0, 0
     while lotes:
         util = sum(l.area for l in lotes)
         req = area_verde_requerida(P.regla_verde, P.valor_verde, len(lotes), util, area_total)
         meta = max(req - area_prot, req * P.pct_recreativa / 100)  # la protección cuenta como área verde ecológica
-        if sum(v["area"] for v in verdes) >= meta - 1e-6:
+        falta = meta - sum(v["area"] for v in verdes)
+        if falta <= 1e-6:
             break
-        k = max(range(len(lotes)), key=lambda i: prioridad(lotes[i]))
+        # primero: sacar justo lo que falta de un lote grande o inclinado, sin perder el lote
+        if P.aprovechar:
+            orden = sorted(lotes, key=lambda l: (-(l.pendiente if math.isfinite(l.pendiente) else 0), -l.area))
+            hecho = False
+            for l in orden:
+                if l.area - falta * 1.02 < P.area_minima:
+                    continue
+                r_ = recortar(l, falta * 1.02)
+                if r_:
+                    pedazo, resto, fr = r_
+                    l.poly, l.area, l.frente = resto, resto.area, fr
+                    verdes.append({"poly": pedazo, "area": pedazo.area, "de_lote": True})
+                    recortados += 1
+                    hecho = True
+                    break
+            if hecho:
+                continue
+        # si no se puede recortar: el lote que mejor cubre lo que falta (el más inclinado si hay relieve)
+        if P.aprovechar and not any(math.isfinite(l.pendiente) for l in lotes):
+            cubren = [i for i in range(len(lotes)) if lotes[i].area >= falta]
+            k = min(cubren, key=lambda i: lotes[i].area) if cubren else max(range(len(lotes)), key=lambda i: lotes[i].area)
+        else:
+            k = max(range(len(lotes)), key=lambda i: prioridad(lotes[i]))
         l = lotes.pop(k)
         verdes.append({"poly": l.poly, "area": l.area, "de_lote": True})
         convertidos += 1
+
+    # ---- máximo aprovechamiento: lo que sobra de área verde se vende (como lote nuevo o sumado a un vecino)
+    def meta_verde(lista):
+        util = sum(l.area for l in lista)
+        req = area_verde_requerida(P.regla_verde, P.valor_verde, len(lista), util, area_total)
+        return max(req - area_prot, req * P.pct_recreativa / 100)
+
+    lotes_extra, sumado_m2 = 0, 0.0
+    if P.aprovechar and lotes:
+        lote_tipo = max(P.area_minima, F * D)
+        # primero se sueltan las piezas que menos sirven de parque: lejos de la quebrada y chicas
+        sueltas = sorted([v for v in verdes if not v["de_lote"]],
+                         key=lambda v: (prot_r is not None and v["poly"].distance(prot_r) < 1.0, v["area"]))
+        for v in sueltas:
+            pieza = v["poly"]
+            resto = sum(x["area"] for x in verdes if x is not v)
+            frente_calle = pieza.boundary.intersection(calle_b).length
+            nuevo = None
+            if P.area_minima <= pieza.area <= 2.5 * lote_tipo and frente_calle >= 0.6 * F:
+                c = pieza.centroid
+                cw = desrotar(c, deg)
+                nuevo = _Lote(pieza, pieza.area, frente_calle, 999, c.x, pendiente_en(cw.x, cw.y))
+                if resto >= meta_verde(lotes + [nuevo]) - 1e-6:
+                    lotes.append(nuevo)
+                    verdes.remove(v)
+                    lotes_extra += 1
+                    continue
+            # si no da para lote propio, se suma al lote vecino con el que comparte más lindero
+            vecinos = [(l.poly.boundary.intersection(pieza.buffer(0.1)).length, l) for l in lotes]
+            vecinos = [(lg, l) for lg, l in vecinos if lg >= 2.0]
+            if not vecinos:
+                continue
+            _, l = max(vecinos, key=lambda x: x[0])
+            u = unary_union([l.poly, pieza])
+            if not isinstance(u, Polygon) or u.area > 2.0 * lote_tipo:
+                continue
+            area_antes = l.area
+            l.poly, l.area = u, u.area
+            if resto >= meta_verde(lotes) - 1e-6:
+                verdes.remove(v)
+                sumado_m2 += pieza.area
+            else:  # no alcanza el área verde: se deshace
+                l.poly = _mayor(l.poly.difference(pieza)) or l.poly
+                l.area = area_antes
+
+    # lotes que quedaron del doble de tamaño: se parten en dos si ambos quedan con frente y área mínima
+    partidos = 0
+    if P.aprovechar and lotes:
+        for l in sorted(list(lotes), key=lambda x: -x.area):
+            if l.area < max(2 * P.area_minima, 1.6 * lote_tipo):
+                continue
+            r_ = recortar(l, l.area / 2, frente_pedazo=0.6 * F)
+            if not r_:
+                continue
+            pedazo, resto, fr = r_
+            c = pedazo.centroid
+            cw = desrotar(c, deg)
+            nuevo = _Lote(pedazo, pedazo.area, pedazo.boundary.intersection(calle_b).length, l.fila, c.x,
+                          pendiente_en(cw.x, cw.y))
+            antes = (l.poly, l.area, l.frente)
+            l.poly, l.area, l.frente = resto, resto.area, fr
+            if sum(v["area"] for v in verdes) >= meta_verde(lotes + [nuevo]) - 1e-6:
+                lotes.append(nuevo)
+                partidos += 1
+            else:
+                l.poly, l.area, l.frente = antes
 
     # equipamiento social: los lotes más planos que queden
     equip = []
@@ -464,6 +593,8 @@ def lotificar(anillo, P: Parametros | None = None, malla: Malla | None = None, e
             "area_proteccion": area_prot, "area_equipamiento": sum(e.area for e in equip),
             "calles_sin_salida": P.entrada is not None,
             "calles_desconectadas": calles_sueltas, "accesos": accesos,
+            "lotes_de_area_sobrante": lotes_extra, "area_sobrante_sumada_a_lotes": sumado_m2,
+            "lotes_recortados_para_verde": recortados, "lotes_partidos": partidos,
         },
         parametros={"calle": W, "frente": F, "fondo": D, "area_minima": P.area_minima,
                     "regla_verde": P.regla_verde, "valor_verde": P.valor_verde},
