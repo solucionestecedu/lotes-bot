@@ -605,6 +605,7 @@ class Agente:
             p = punto_de_acceso(t.puntos, f["acceso_lado"])
             if p:
                 base["entrada"] = p
+            base["lado_acceso"] = f["acceso_lado"]
         excluir, prot = [], []
         for q in f.get("quebradas") or []:
             if q.get("tipo") == "rio":
@@ -619,7 +620,7 @@ class Agente:
                 excluir.append(franja)
             prot.append({"tipo": q.get("tipo"), "lado": q.get("lado"), "profundidad": q.get("profundidad_m"),
                          "ancho": round(ancho, 2)})
-        ficha_normas = {"zona": zona, "tipo": f.get("tipo"), "protecciones": prot,
+        ficha_normas = {"zona": zona, "tipo": f.get("tipo"), "protecciones": prot, "cerrado": f.get("cerrado"),
                         "quebrada_sin_datos": (any(c.get("tipo") in ("quebrada", "rio") for c in f.get("del_plano", []))
                                                and not f.get("quebradas") and not f.get("sin_quebradas"))}
         return Parametros.de_dict(base), excluir, ficha_normas

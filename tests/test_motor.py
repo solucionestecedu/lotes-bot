@@ -154,7 +154,8 @@ def test_descarga_usa_respaldo_si_falla_aws(chiltiupan):
 def test_lotificacion_chiltiupan(chiltiupan, malla):
     r = lotificar(chiltiupan.puntos, Parametros(), malla)
     s = r.stats
-    assert s["lotes"] == 26
+    assert 26 <= s["lotes"] <= 36  # con el corte por área caben más lotes que con frente fijo
+    assert all(l["frente"] >= 6 for l in r.lotes)
     assert s["area_verde"] >= s["area_verde_requerida"]
     assert all(l["area"] >= 0.95 * 200 for l in r.lotes)
     total = s["area_util"] + s["area_circulacion"] + s["area_verde"] + s["area_remanente"]

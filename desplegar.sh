@@ -33,6 +33,16 @@ gcloud secrets add-iam-policy-binding GEMINI_API_KEY --member="serviceAccount:${
 gcloud projects add-iam-policy-binding "$PROYECTO" --member="serviceAccount:${SA}" \
   --role=roles/run.builder --condition=None --quiet >/dev/null || true
 
+# Si el servicio ya existe, se conserva su token del chat de prueba (el enlace no cambia).
+if [ -z "${PRUEBA_TOKEN:-}" ]; then
+  PRUEBA_TOKEN="$(gcloud run services describe "$SERVICIO" --region "$REGION" --format=json 2>/dev/null \
+    | python3 -c 'import json,sys
+try:
+    env = json.load(sys.stdin)["spec"]["template"]["spec"]["containers"][0].get("env", [])
+    print(next((e["value"] for e in env if e.get("name") == "PRUEBA_TOKEN"), ""))
+except Exception:
+    print("")' || true)"
+fi
 PRUEBA_TOKEN="${PRUEBA_TOKEN:-$(openssl rand -hex 12)}"
 echo "4/5 Construyendo y publicando (de 5 a 10 minutos)..."
 gcloud run deploy "$SERVICIO" --source . --region "$REGION" --allow-unauthenticated \

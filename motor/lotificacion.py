@@ -33,6 +33,7 @@ class Parametros:
     valor_verde: float = 10.0       # % o m² por lote
     angulo: float | None = None     # grados; None = automático
     entrada: tuple[float, float] | None = None  # punto (x, y) de acceso
+    lado_acceso: str | None = None  # lado del lindero que da a la calle pública (norte, sur, oriente...)
     verde_minimo: float = 100.0     # remanente mínimo para contar como área verde
     pct_recreativa: float = 60.0    # parte del área verde que debe ser recreativa (RLUC Art. 59)
     equipamiento_m2: float = 0.0    # terreno para equipamiento social (escuela, casa comunal)
@@ -42,7 +43,7 @@ class Parametros:
         p = cls()
         for k, v in (d or {}).items():
             if hasattr(p, k) and v is not None:
-                setattr(p, k, tuple(v) if k == "entrada" else (v if k == "regla_verde" else float(v)))
+                setattr(p, k, tuple(v) if k == "entrada" else (v if k in ("regla_verde", "lado_acceso") else float(v)))
         return p
 
 
@@ -92,6 +93,45 @@ def _restar_iv(A, l, r):
                 out.append((a[0], l))
             if a[1] > r:
                 out.append((r, a[1]))
+    return out
+
+
+def _frente(poly, y0, y1, abajo, x0, x1):
+    ft = 0.3
+    fy = y1 - ft if abajo else y0
+    return poly.intersection(box(x0 - 0.01, fy, x1 + 0.01, fy + ft)).area / ft
+
+
+def _cortar_por_area(zona, y0, y1, abajo, meta, minima, frente_min, fila):
+    """Corta una franja (entre la calle y el fondo) en lotes de área parecida a `meta`, de izquierda a derecha."""
+    minx, _, maxx, _ = zona.bounds
+    if zona.area < minima:
+        return []
+    n = max(1, int(zona.area / meta + 0.35))  # cuántos lotes caben con área cercana a la meta
+    objetivo = zona.area / n
+    cortes = [minx]
+    for _ in range(n - 1):
+        lo, hi = cortes[-1], maxx
+        for _ in range(30):  # bisección: dónde cortar para juntar el área objetivo
+            mid = (lo + hi) / 2
+            if zona.intersection(box(cortes[-1], y0 - 1, mid, y1 + 1)).area < objetivo:
+                lo = mid
+            else:
+                hi = mid
+        cortes.append(hi)
+    cortes.append(maxx)
+    out = []
+    for a, b in zip(cortes, cortes[1:]):
+        pieza = _mayor(zona.intersection(box(a, y0 - 1, b, y1 + 1)))
+        if pieza is None:
+            continue
+        fr = _frente(pieza, y0, y1, abajo, a, b)
+        if pieza.area >= minima and fr >= frente_min:
+            out.append(_Lote(pieza, pieza.area, fr, fila, (a + b) / 2))
+        elif out:  # muy chico o sin frente: se suma al lote anterior
+            u = unary_union([out[-1].poly, pieza])
+            if isinstance(u, Polygon):
+                out[-1].poly, out[-1].area = u, u.area
     return out
 
 
@@ -223,9 +263,39 @@ def lotificar(anillo, P: Parametros | None = None, malla: Malla | None = None, e
             s += M
         return n
 
-    # ---- búsqueda de orientación
+    # lindero que da a la calle pública: las calles deben llegar ahí (o al punto de entrada)
+    acceso_geom = None
+    if P.lado_acceso and P.lado_acceso.lower() in LADOS:
+        from shapely.geometry import LineString, MultiLineString
+
+        bordes = _bordes_hacia(terreno_total, P.lado_acceso, tolerancia=35)
+        if bordes:
+            acceso_geom = MultiLineString([LineString(e) for e in bordes])
+
+    def conectividad(circ, R_deg):
+        """(piezas de calle sin salida a la calle pública, número de piezas que tocan la calle pública)."""
+        piezas = _poligonos(circ)
+        if not piezas or (acceso_geom is None and not P.entrada):
+            return 0, 0
+        destinos = []
+        if acceso_geom is not None:
+            destinos.append(rotar(acceso_geom, R_deg))
+        if P.entrada:
+            destinos.append(rotar(Point(P.entrada), R_deg))
+        con = {i for i, g in enumerate(piezas) if any(g.distance(d) < 1.0 for d in destinos)}
+        directas = len(con)
+        cambio = True
+        while cambio:
+            cambio = False
+            for i, g in enumerate(piezas):
+                if i not in con and any(g.distance(piezas[j]) < 0.5 for j in con):
+                    con.add(i)
+                    cambio = True
+        return len(piezas) - len(con), directas
+
+    # ---- búsqueda: orientación, posición de calles y de la calle principal
     angulos = [P.angulo] if P.angulo is not None else [k * 5.0 for k in range(36)]
-    mejor = None
+    candidatos = []
     for deg in angulos:
         th = math.radians(deg)
         R = rotar(terreno, deg)
@@ -236,85 +306,96 @@ def lotificar(anillo, P: Parametros | None = None, malla: Malla | None = None, e
         cands = []
         if P.entrada:
             e = rotar(Point(P.entrada), deg)
-            cands += [(o, e.x) for o in offs]
+            cands += [(o, e.x, False) for o in offs]
             oE = ((e.y - W / 2 - bb[1]) % M + M) % M
-            cands += [(oE, bb[0] + f * (bb[2] - bb[0])) for f in (0.25, 0.5, 0.75)]
+            cands += [(oE, bb[0] + f * (bb[2] - bb[0]), False) for f in (0.25, 0.5, 0.75)]
+            cands.append((oE, bb[0] - 2 * W, True))  # una sola calle que entra desde el acceso (sin calle principal)
         else:
-            cands = [(o, bb[0] + f * (bb[2] - bb[0])) for f in (0.25, 0.5, 0.75) for o in offs]
-        for o, xs in cands:
+            cands = [(o, bb[0] + f * (bb[2] - bb[0]), False) for f in (0.25, 0.5, 0.75) for o in offs]
+        for o, xs, unica in cands:
             n = conteo(R, bb, o, xs)
-            score = n * factor
-            if mejor is None or score > mejor["score"] + 1e-9:
-                mejor = {"deg": deg, "o": o, "xs": xs, "n": n, "score": score, "pend": sl}
+            candidatos.append({"deg": deg, "o": o, "xs": xs, "unica": unica, "score": n * factor, "pend": sl,
+                               "factor": factor})
 
-    # ---- trazo con la mejor combinación
-    deg = mejor["deg"]
-    R = rotar(terreno, deg)
-    bb = R.bounds
-    xs = mejor["xs"]
-    entrada_r = rotar(Point(P.entrada), deg) if P.entrada else None
-    calles, lotes, ys_calle = [], [], []
-    fila = 0
-    s = bb[1] + mejor["o"] - M
-    while s - D < bb[3]:
-        franja_calle = R.intersection(box(bb[0] - 5, s, bb[2] + 5, s + W))
-        en_banda = []
-        for y0, y1, abajo in ((s - D, s, True), (s + W, s + W + D, False)):
-            fila += 1
-            if y1 <= bb[1] or y0 >= bb[3]:
-                continue
-            for lado in (-1, 1):
-                x = xs + lado * W / 2
-                prev = None
-                while (x < bb[2]) if lado > 0 else (x > bb[0]):
-                    xa, xb = x, x + lado * F
-                    xl, xr = min(xa, xb), max(xa, xb)
-                    x = xb
-                    pieza = _mayor(R.intersection(box(xl, y0, xr, y1)))
-                    if pieza is None:
-                        prev = None
-                        continue
-                    a = pieza.area
-                    ft = 0.3
-                    fy = y1 - ft if abajo else y0
-                    frente = pieza.intersection(box(xl - 0.01, fy, xr + 0.01, fy + ft)).area / ft
-                    if a >= P.area_minima and frente >= 0.6 * F:
-                        prev = _Lote(pieza, a, frente, fila, (xl + xr) / 2)
-                        en_banda.append(prev)
-                    elif prev is not None and 0.5 < a < 0.6 * P.area_minima and frente > 0.5:
-                        u = unary_union([prev.poly, pieza])
-                        if isinstance(u, Polygon):
-                            prev.poly, prev.area, prev.frente = u, u.area, prev.frente + frente
-                        else:
-                            prev = None
-                    else:
-                        prev = None
-        if en_banda and not franja_calle.is_empty:
-            calles += _poligonos(franja_calle)
-            lotes += en_banda
-            ys_calle.append(s)
-        s += M
-    if not lotes:
-        raise ErrorLotificacion("No cupo ningún lote con estas medidas. Prueba lotes más chicos o calles más angostas.")
-
-    # calle principal (une las secundarias y sale al lindero)
-    y_lo, y_hi = min(ys_calle), max(ys_calle) + W
-    if entrada_r is not None:
-        if entrada_r.y < y_lo:
+    def trazar(c):
+        deg, xs = c["deg"], c["xs"]
+        R = rotar(terreno, deg)
+        bb = R.bounds
+        entrada_r = rotar(Point(P.entrada), deg) if P.entrada else None
+        calles, lotes, ys_calle = [], [], []
+        # bandas de calle que tocan el terreno
+        bandas = []
+        s = bb[1] + c["o"] - M
+        while s - D < bb[3]:
+            if not (c["unica"] and not (s - 0.5 <= entrada_r.y <= s + W + 0.5)):
+                if not R.intersection(box(bb[0] - 5, s, bb[2] + 5, s + W)).is_empty:
+                    bandas.append(s)
+            s += M
+        meta = max(P.area_minima, F * D)  # área objetivo de cada lote
+        espina_x = None if c["unica"] else (xs - W / 2, xs + W / 2)
+        fila = 0
+        for k, s in enumerate(bandas):
+            franja_calle = R.intersection(box(bb[0] - 5, s, bb[2] + 5, s + W))
+            en_banda = []
+            # la primera y la última banda se estiran hacia el lindero para no dejar tiras sueltas
+            abajo_y0 = s - (1.6 * D if k == 0 else D)
+            arriba_y1 = s + W + (1.6 * D if k == len(bandas) - 1 else D)
+            for y0, y1, abajo in ((abajo_y0, s, True), (s + W, arriba_y1, False)):
+                fila += 1
+                zona = R.intersection(box(bb[0] - 1, y0, bb[2] + 1, y1))
+                if espina_x:
+                    zona = zona.difference(box(espina_x[0], y0 - 1, espina_x[1], y1 + 1))
+                for pieza in sorted(_poligonos(zona), key=lambda g: g.bounds[0]):
+                    en_banda += _cortar_por_area(pieza, y0, y1, abajo, meta, P.area_minima, 0.6 * F, fila)
+            if en_banda and not franja_calle.is_empty:
+                calles += _poligonos(franja_calle)
+                lotes += en_banda
+                ys_calle.append(s)
+        if not lotes:
+            return None
+        # calle principal (une las calles y sale al lindero)
+        y_lo, y_hi = min(ys_calle), max(ys_calle) + W
+        if entrada_r is not None:
+            if entrada_r.y < y_lo:
+                y_lo = bb[1] - 5
+            if entrada_r.y > y_hi:
+                y_hi = bb[3] + 5
+        else:
             y_lo = bb[1] - 5
-        if entrada_r.y > y_hi:
-            y_hi = bb[3] + 5
-    else:
-        y_lo = bb[1] - 5
-    espina = R.intersection(box(xs - W / 2, y_lo, xs + W / 2, y_hi))
-    circ = unary_union(calles + _poligonos(espina))
-    # los lotes no pueden pisar la calle principal
-    for l in lotes:
-        l.poly = _mayor(l.poly.difference(circ)) or l.poly
-        l.area = l.poly.area
-    lotes = [l for l in lotes if l.area >= 0.95 * P.area_minima]
-    if not lotes:
+        espina = R.intersection(box(xs - W / 2, y_lo, xs + W / 2, y_hi)) if not c["unica"] else Polygon()
+        circ = unary_union(calles + _poligonos(espina))
+        for l in lotes:  # los lotes no pueden pisar la calle principal
+            l.poly = _mayor(l.poly.difference(circ)) or l.poly
+            l.area = l.poly.area
+        lotes = [l for l in lotes if l.area >= 0.95 * P.area_minima]
+        if not lotes:
+            return None
+        sueltas, accesos = conectividad(circ, deg)
+        return {"R": R, "lotes": lotes, "circ": circ, "calles": calles, "sueltas": sueltas, "accesos": accesos}
+
+    # se trazan las mejores opciones del conteo rápido y se queda la que da más lotes
+    candidatos.sort(key=lambda c: -c["score"])
+    mejor, mejor_traz, vistos = None, None, set()
+    for c in candidatos:
+        clave = (c["deg"], round(c["o"], 1), round(c["xs"], 1), c["unica"])
+        if clave in vistos:
+            continue
+        vistos.add(clave)
+        if len(vistos) > 24 and mejor is not None and mejor[0][0] > -50:
+            break
+        tz = trazar(c)
+        if tz is None:
+            continue
+        # una calle sin salida a la calle pública deja lotes sin acceso: se castiga fuerte
+        valor = (len(tz["lotes"]) * c["factor"] - 100 * tz["sueltas"], -tz["circ"].area)
+        if mejor is None or valor > mejor[0]:
+            mejor, mejor_traz = (valor, c), tz
+    if mejor is None:
         raise ErrorLotificacion("No cupo ningún lote con estas medidas. Prueba lotes más chicos o calles más angostas.")
+    mejor = mejor[1]
+    deg, xs = mejor["deg"], mejor["xs"]
+    R, lotes, circ, calles = mejor_traz["R"], mejor_traz["lotes"], mejor_traz["circ"], mejor_traz["calles"]
+    calles_sueltas, accesos = mejor_traz["sueltas"], mejor_traz["accesos"]
 
     resto = R.difference(unary_union([circ] + [l.poly for l in lotes]))
     verdes, remanentes = [], []
@@ -382,6 +463,7 @@ def lotificar(anillo, P: Parametros | None = None, malla: Malla | None = None, e
             "lote_min": min(areas), "lote_max": max(areas), "pendiente_calles_pct": mejor["pend"] * 100,
             "area_proteccion": area_prot, "area_equipamiento": sum(e.area for e in equip),
             "calles_sin_salida": P.entrada is not None,
+            "calles_desconectadas": calles_sueltas, "accesos": accesos,
         },
         parametros={"calle": W, "frente": F, "fondo": D, "area_minima": P.area_minima,
                     "regla_verde": P.regla_verde, "valor_verde": P.valor_verde},

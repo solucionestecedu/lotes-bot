@@ -164,7 +164,7 @@ def test_flujo_dos_terrenos_unidos(tmp_path):
     out = json.loads(ag.atender(s, "ficha")[0]["texto"])
     assert out["falta_preguntar"] == []
     out = json.loads(ag.atender(s, "lotes")[0]["texto"])
-    assert 8 <= out["lotes"] <= 13 and 600 <= out["lote_promedio_m2"] <= 850
+    assert 10 <= out["lotes"] <= 16 and 600 <= out["lote_promedio_m2"] <= 850
     assert out["area_proteccion_m2"] > 500
     estados = {f["regla"]: f["estado"] for f in out["cumplimiento"]}
     assert estados["Área verde total"] == "cumple" and estados["Protección de quebrada (sur)"] == "cumple"
@@ -221,3 +221,21 @@ def test_segunda_foto_se_suma(tmp_path):
     assert "colindantes" in r2["colindantes"][0]
     r3 = ag.h_leer_plano(s, adjuntos=["a1", "a2"])  # las dos fotos de una vez
     assert len(r3["varios_terrenos"]) == 2
+
+
+def test_todas_las_calles_llegan_a_la_calle_publica(ab):
+    a, b = ab
+    u = colindancia.unir([a, colindancia.alinear(a, b)[0]])
+    P = Parametros(frente=20, fondo=35, area_minima=630, entrada=punto_de_acceso(u.puntos, "norte"), lado_acceso="norte")
+    r = lotificar(u.puntos, P, None, excluir=[franja_de_proteccion(u.puntos, "sur", 12)])
+    assert r.stats["calles_desconectadas"] == 0 and r.stats["lotes"] >= 12
+    filas = normas.revisar(r, u, None, {"zona": "urbano", "cerrado": True})
+    if r.stats["accesos"] > 1:
+        assert any(f["regla"].startswith("Un solo acceso") and f["estado"] == "revisar" for f in filas)
+
+
+def test_lotes_cortados_por_area_parecida(ab):
+    a, _ = ab
+    r = lotificar(a.puntos, Parametros(frente=20, fondo=35, area_minima=630))
+    areas = [l["area"] for l in r.lotes]
+    assert len(areas) >= 5 and min(areas) >= 0.95 * 630

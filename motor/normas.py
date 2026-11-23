@@ -196,7 +196,17 @@ def revisar(lot, terreno, malla=None, ficha: dict | None = None) -> list[dict]:
                            f"{inclinados} de {n}", "cumple" if inclinados == 0 else "revisar",
                            "Cortes o rellenos de más de 1 m entre lotes requieren muro o talud."))
 
-    # 9. Calles sin salida
+    # 9. Acceso
+    if lot.stats.get("calles_desconectadas"):
+        filas.append(_fila("Acceso a todas las calles", "Criterio de diseño", "todas conectadas a la calle pública",
+                           f"{lot.stats['calles_desconectadas']} sin conexión", "no_cumple",
+                           "Hay lotes que dan a una calle que no llega a la calle pública."))
+    if ficha.get("cerrado") and lot.stats.get("accesos", 0) > 1:
+        filas.append(_fila("Un solo acceso (proyecto cerrado)", "Criterio de diseño", "1 acceso con portón",
+                           f"{lot.stats['accesos']} accesos", "revisar",
+                           "Para un proyecto cerrado conviene unir las calles por dentro y dejar una sola entrada."))
+
+    # 10. Calles sin salida
     if lot.stats.get("calles_sin_salida"):
         filas.append(_fila("Calles sin salida", "RLUC Art. 87", "plazoleta de retorno", "por definir", "revisar",
                            "Los retornos (redondel, T o L) solo se permiten en vías de reparto y accesos rodados."))

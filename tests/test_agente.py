@@ -93,7 +93,8 @@ def test_flujo_completo(tmp_path, malla_local):
     out = ag.atender(s, "saca el relieve")
     assert '"desnivel": 138.' in out[0]["texto"]
     out = ag.atender(s, "prediseña los lotes")
-    assert '"lotes": 26' in out[0]["texto"]
+    n_lotes = json.loads(out[0]["texto"][len("RESULTADO "):])["lotes"]
+    assert 26 <= n_lotes <= 36
     out = ag.atender(s, "mándame la lámina")
     archivos = [o for o in out if o["tipo"] == "archivo"]
     assert [a["nombre"] for a in archivos] == ["lotificacion-chiltiupan-vista-3d.jpg", "lotificacion-chiltiupan.pdf",
@@ -104,7 +105,7 @@ def test_flujo_completo(tmp_path, malla_local):
 
     # El estado que ve el modelo resume lo hecho, y el historial guarda solo texto.
     sistema, _ = llm.vistos[-1]
-    assert "Prediseño: 26 lotes" in sistema and "Relieve: listo" in sistema
+    assert f"Prediseño: {n_lotes} lotes" in sistema and "Relieve: listo" in sistema
     assert all(set(m) == {"rol", "texto"} for m in s.historial)
 
 
@@ -124,7 +125,9 @@ def test_modo_sin_ia_flujo(tmp_path, malla_local):
     out = ag.atender(s, f"inicio {ini[0]:.3f}, {ini[1]:.3f}\n" + _texto("chiltiupan_rumbos.txt"))
     assert "11,698.16 m²" in out[0]["texto"]
     assert "relieve" in ag.atender(s, "relieve")[0]["texto"].lower() or True
-    assert "26 lotes" in ag.atender(s, "lotes")[0]["texto"]
+    import re
+
+    assert int(re.search(r"(\d+) lotes", ag.atender(s, "lotes")[0]["texto"]).group(1)) >= 26
     out = ag.atender(s, "lámina")
     assert sum(o["tipo"] == "archivo" for o in out) == 5
 
