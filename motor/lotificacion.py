@@ -34,6 +34,8 @@ class Parametros:
     angulo: float | None = None     # grados; None = automático
     entrada: tuple[float, float] | None = None  # punto (x, y) de acceso
     verde_minimo: float = 100.0     # remanente mínimo para contar como área verde
+    pct_recreativa: float = 60.0    # parte del área verde que debe ser recreativa (RLUC Art. 59)
+    equipamiento_m2: float = 0.0    # terreno para equipamiento social (escuela, casa comunal)
 
     @classmethod
     def de_dict(cls, d: dict | None) -> "Parametros":
@@ -112,15 +114,67 @@ class Resultado:
     remanentes: list[Polygon]
     stats: dict
     parametros: dict = field(default_factory=dict)
+    protecciones: list[Polygon] = field(default_factory=list)
+    equipamiento: list[dict] = field(default_factory=list)
 
 
-def lotificar(anillo, P: Parametros | None = None, malla: Malla | None = None) -> Resultado:
+LADOS = {"norte": 0, "noreste": 45, "este": 90, "oriente": 90, "sureste": 135, "sur": 180, "suroeste": 225,
+         "oeste": 270, "poniente": 270, "noroeste": 315}
+
+
+def _bordes_hacia(poly: Polygon, lado: str, tolerancia: float = 50.0):
+    """Tramos del lindero cuya cara exterior mira hacia `lado` (norte, sur, oriente...)."""
+    from shapely.geometry.polygon import orient
+
+    objetivo = LADOS[lado.strip().lower()]
+    pts = list(orient(poly, 1.0).exterior.coords)  # antihorario
+    out = []
+    for a, b in zip(pts, pts[1:]):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        if math.hypot(dx, dy) < 0.5:
+            continue
+        az = math.degrees(math.atan2(dy, -dx)) % 360  # normal exterior (dy, -dx) → azimut
+        if abs((az - objetivo + 180) % 360 - 180) <= tolerancia:
+            out.append((a, b))
+    return out
+
+
+def punto_de_acceso(anillo, lado: str) -> tuple[float, float] | None:
+    """Mitad del tramo más largo del lindero que da hacia `lado`."""
+    bordes = _bordes_hacia(Polygon(anillo).buffer(0), lado)
+    if not bordes:
+        return None
+    a, b = max(bordes, key=lambda e: math.dist(*e))
+    return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+
+
+def franja_de_proteccion(anillo, lado: str, ancho: float) -> Polygon | None:
+    """Franja de `ancho` metros hacia adentro del terreno, a lo largo del lindero que da hacia `lado`."""
+    from shapely.geometry import LineString
+
+    poly = Polygon(anillo).buffer(0)
+    bordes = _bordes_hacia(poly, lado)
+    if not bordes or ancho <= 0:
+        return None
+    franja = unary_union([LineString(e).buffer(ancho, cap_style=2) for e in bordes]).intersection(poly)
+    return _mayor(franja) if franja.geom_type != "Polygon" else franja
+
+
+def lotificar(anillo, P: Parametros | None = None, malla: Malla | None = None, excluir: list | None = None) -> Resultado:
     P = P or Parametros()
     W, F, D = P.calle, P.frente, P.fondo
     M = 2 * D + W
-    terreno = Polygon(anillo).buffer(0)
-    if not isinstance(terreno, Polygon):
-        terreno = _mayor(terreno)
+    terreno_total = Polygon(anillo).buffer(0)
+    if not isinstance(terreno_total, Polygon):
+        terreno_total = _mayor(terreno_total)
+    protecciones, piezas_sueltas = [], []
+    terreno = terreno_total
+    if excluir:
+        zona = unary_union([e for e in excluir if e is not None and not e.is_empty]).intersection(terreno_total)
+        protecciones = _poligonos(zona)
+        piezas = sorted(_poligonos(terreno_total.difference(zona)), key=lambda p: -p.area)
+        terreno = piezas[0] if piezas else None
+        piezas_sueltas = piezas[1:]
     if terreno is None or terreno.area < P.area_minima:
         raise ErrorLotificacion("El terreno es más chico que un lote.")
     C = terreno.centroid
@@ -274,7 +328,10 @@ def lotificar(anillo, P: Parametros | None = None, malla: Malla | None = None) -
         c = desrotar(l.poly.centroid, deg)
         l.pendiente = pendiente_en(c.x, c.y)
 
-    area_total = terreno.area
+    area_total = terreno_total.area
+    area_prot = sum(p.area for p in protecciones)
+    for p in piezas_sueltas:
+        (verdes.append({"poly": p, "area": p.area, "de_lote": False}) if p.area >= P.verde_minimo else remanentes.append(p))
 
     def prioridad(l):
         if math.isfinite(l.pendiente):
@@ -285,12 +342,19 @@ def lotificar(anillo, P: Parametros | None = None, malla: Malla | None = None) -
     while lotes:
         util = sum(l.area for l in lotes)
         req = area_verde_requerida(P.regla_verde, P.valor_verde, len(lotes), util, area_total)
-        if sum(v["area"] for v in verdes) >= req - 1e-6:
+        meta = max(req - area_prot, req * P.pct_recreativa / 100)  # la protección cuenta como área verde ecológica
+        if sum(v["area"] for v in verdes) >= meta - 1e-6:
             break
         k = max(range(len(lotes)), key=lambda i: prioridad(lotes[i]))
         l = lotes.pop(k)
         verdes.append({"poly": l.poly, "area": l.area, "de_lote": True})
         convertidos += 1
+
+    # equipamiento social: los lotes más planos que queden
+    equip = []
+    while lotes and P.equipamiento_m2 > 0 and sum(e.area for e in equip) < P.equipamiento_m2 - 1e-6:
+        k = min(range(len(lotes)), key=lambda i: lotes[i].pendiente if math.isfinite(lotes[i].pendiente) else abs(lotes[i].x - xs))
+        equip.append(lotes.pop(k))
 
     lotes.sort(key=lambda l: (l.fila, l.x))
     salida = []
@@ -302,6 +366,8 @@ def lotificar(anillo, P: Parametros | None = None, malla: Malla | None = None) -
     area_circ = circ.area
     areas = [l["area"] for l in salida]
     req = area_verde_requerida(P.regla_verde, P.valor_verde, len(salida), area_util, area_total)
+    if not salida:
+        raise ErrorLotificacion("Después de dejar área verde y equipamiento no quedaron lotes. Revisa las medidas.")
     return Resultado(
         angulo=deg,
         lotes=salida,
@@ -314,9 +380,13 @@ def lotificar(anillo, P: Parametros | None = None, malla: Malla | None = None) -
             "lotes": len(salida), "lotes_convertidos_a_verde": convertidos,
             "largo_calles": area_circ / W, "lote_promedio": area_util / len(salida),
             "lote_min": min(areas), "lote_max": max(areas), "pendiente_calles_pct": mejor["pend"] * 100,
+            "area_proteccion": area_prot, "area_equipamiento": sum(e.area for e in equip),
+            "calles_sin_salida": P.entrada is not None,
         },
         parametros={"calle": W, "frente": F, "fondo": D, "area_minima": P.area_minima,
                     "regla_verde": P.regla_verde, "valor_verde": P.valor_verde},
+        protecciones=protecciones,
+        equipamiento=[{"poly": desrotar(e.poly, deg), "area": e.area} for e in equip],
     )
 
 

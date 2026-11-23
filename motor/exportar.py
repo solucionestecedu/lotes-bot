@@ -16,6 +16,8 @@ _EST = {
     "lotes": ("ffffffff", "5500a5ff", 1),
     "calles": ("ff808080", "99808080", 1),
     "verde": ("ff00aa00", "8800cc00", 1),
+    "proteccion": ("ff2e6b3d", "992e6b3d", 1),
+    "equipamiento": ("ffcc8844", "88eed3bc", 1),
     "curvas": ("ff3d6b8b", "00000000", 1),
     "curvas_indice": ("ff1f3f5f", "00000000", 2),
 }
@@ -66,6 +68,16 @@ def kml(nombre: str, t: Terreno, curvas: list[dict] | None = None, lot: Resultad
         for i, v in enumerate(lot.verdes, 1):
             out.append(_poly_kml(f"Área verde {i}", v["poly"], "verde", f"{v['area']:,.1f} m²"))
         out.append("</Folder>")
+        if lot.protecciones:
+            out.append("<Folder><name>Zona de protección</name>")
+            for i, p in enumerate(lot.protecciones, 1):
+                out.append(_poly_kml(f"Zona de protección {i}", p, "proteccion", f"{p.area:,.1f} m²"))
+            out.append("</Folder>")
+        if lot.equipamiento:
+            out.append("<Folder><name>Equipamiento social</name>")
+            for i, e in enumerate(lot.equipamiento, 1):
+                out.append(_poly_kml(f"Equipamiento {i}", e["poly"], "equipamiento", f"{e['area']:,.1f} m²"))
+            out.append("</Folder>")
     out.append("</Document></kml>\n")
     return "".join(out)
 
@@ -74,7 +86,7 @@ def dxf(ruta: str, t: Terreno, curvas: list[dict] | None = None, lot: Resultado 
     doc = ezdxf.new("R2010")
     doc.header["$INSUNITS"] = 6  # metros
     capas = {"LINDERO": 2, "VERTICES": 7, "CURVAS_INDICE": 30, "CURVAS_INTERMEDIAS": 33, "COTAS": 30,
-             "LOTES": 7, "LOTES_TXT": 7, "CALLES": 8, "AREA_VERDE": 3}
+             "LOTES": 7, "LOTES_TXT": 7, "CALLES": 8, "AREA_VERDE": 3, "PROTECCION": 96, "EQUIPAMIENTO": 151}
     for n, c in capas.items():
         doc.layers.add(n, color=c)
     msp = doc.modelspace()
@@ -102,5 +114,11 @@ def dxf(ruta: str, t: Terreno, curvas: list[dict] | None = None, lot: Resultado 
         for v in lot.verdes:
             for r in anillos(v["poly"]):
                 msp.add_lwpolyline(r, close=True, dxfattribs={"layer": "AREA_VERDE"})
+        for p in lot.protecciones:
+            for r in anillos(p):
+                msp.add_lwpolyline(r, close=True, dxfattribs={"layer": "PROTECCION"})
+        for e in lot.equipamiento:
+            for r in anillos(e["poly"]):
+                msp.add_lwpolyline(r, close=True, dxfattribs={"layer": "EQUIPAMIENTO"})
     doc.saveas(ruta)
     return ruta

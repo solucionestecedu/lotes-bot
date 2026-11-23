@@ -37,6 +37,10 @@ COLOR_CURVA = "#a0703c"
 COLOR_LOTE = "#f6e3c4"
 COLOR_VERDE = "#b9dfa8"
 COLOR_CALLE = "#d9d9d9"
+COLOR_PROTECCION = "#8fbf7a"
+COLOR_EQUIP = "#bcd3ea"
+COLOR_ESTADO = {"cumple": "#1e7b34", "no_cumple": "#c0392b", "revisar": "#c77700", "falta_dato": "#666666"}
+TEXTO_ESTADO = {"cumple": "✔ Cumple", "no_cumple": "✖ No cumple", "revisar": "! Revisar", "falta_dato": "? Falta dato"}
 AVISO = "ANTEPROYECTO PRELIMINAR — NO VÁLIDO PARA TRÁMITE"
 
 
@@ -314,7 +318,7 @@ class _Hoja:
         plt.close(self.fig)
 
 
-def _tabla(ax, x0, y_top, columnas, filas, alto_fila, titulo=None, y_min=0.0):
+def _tabla(ax, x0, y_top, columnas, filas, alto_fila, titulo=None, y_min=0.0, color_ultima=None):
     """columnas: [(titulo, ancho_mm, alineación)]. Dibuja hasta donde quepa; devuelve (y_final, filas_restantes)."""
     fs = max(4.0, min(6.2, alto_fila * 1.55))
     ancho = sum(c[1] for c in columnas)
@@ -331,9 +335,12 @@ def _tabla(ax, x0, y_top, columnas, filas, alto_fila, titulo=None, y_min=0.0):
     caben = max(0, int((y - y_min) / alto_fila))
     for fila in filas[:caben]:
         cx = x0
-        for (nombre, w, al), val in zip(columnas, fila):
+        for k, ((nombre, w, al), val) in enumerate(zip(columnas, fila)):
             xx = cx + (w / 2 if al == "center" else (w - 1.2 if al == "right" else 1.2))
-            _t(ax, xx, y - alto_fila / 2, str(val), fs, ha=al)
+            extra = {}
+            if color_ultima and k == len(columnas) - 1:
+                extra = {"color": color_ultima(fila), "weight": "bold"}
+            _t(ax, xx, y - alto_fila / 2, str(val), fs, ha=al, **extra)
             cx += w
         ax.plot([x0, x0 + ancho], [y - alto_fila, y - alto_fila], color="#bbbbbb", lw=0.25)
         y -= alto_fila
@@ -379,7 +386,7 @@ def _eje_principal(poly: Polygon):
 
 # ---------------------------------------------------------------------------- láminas
 def generar(ruta: str, t: Terreno, malla: Malla | None = None, lot: Resultado | None = None,
-            datos: Datos | None = None, intervalo: float | None = None) -> dict:
+            datos: Datos | None = None, intervalo: float | None = None, cumplimiento: list | None = None) -> dict:
     datos = datos or Datos()
     poly = Polygon(t.puntos)
     minx, miny, maxx, maxy = poly.bounds
@@ -460,6 +467,15 @@ def generar(ruta: str, t: Terreno, malla: Malla | None = None, lot: Resultado | 
                 h.ax.add_patch(_patch(v["poly"], fc=COLOR_VERDE, ec="#4f8a3a", lw=0.4, zorder=3, hatch="..." if v["de_lote"] else None))
             for p in lot.remanentes:
                 h.ax.add_patch(_patch(p, fc="#f2f2f2", ec="#bbbbbb", lw=0.3, zorder=3))
+            for p in lot.protecciones:
+                h.ax.add_patch(_patch(p, fc=COLOR_PROTECCION, ec="#3d6b2e", lw=0.4, zorder=3, hatch="////"))
+                c = p.representative_point()
+                _t(h.ax, c.x, c.y, "ZONA DE PROTECCIÓN", 4.6, ha="center", color="#1f3d17", zorder=8,
+                   bbox=dict(boxstyle="square,pad=0.15", fc="white", ec="none", alpha=0.75))
+            for e in lot.equipamiento:
+                h.ax.add_patch(_patch(e["poly"], fc=COLOR_EQUIP, ec="#3e6d99", lw=0.45, zorder=4))
+                c = e["poly"].representative_point()
+                _t(h.ax, c.x, c.y, "EQ", 5, ha="center", color="#1f3f5f", zorder=8, weight="bold")
             for l in lot.lotes:
                 h.ax.add_patch(_patch(l["poly"], fc=COLOR_LOTE, ec="#7a5a2a", lw=0.45, zorder=4))
                 c = l["poly"].representative_point()
@@ -475,6 +491,12 @@ def generar(ruta: str, t: Terreno, malla: Malla | None = None, lot: Resultado | 
                          ("Área verde", dict(fc=COLOR_VERDE, ec="#4f8a3a", lw=0.4)),
                          ("Área verde tomada de lotes inclinados", dict(fc=COLOR_VERDE, ec="#4f8a3a", lw=0.4, hatch="...")),
                          ("Lindero del terreno", {"linea": dict(color=TINTA, lw=1.2)})]
+                if not any(v["de_lote"] for v in lot.verdes):
+                    items = [it for it in items if not it[0].startswith("Área verde tomada")]
+                if lot.protecciones:
+                    items.insert(4, ("Zona de protección (quebrada / río)", dict(fc=COLOR_PROTECCION, ec="#3d6b2e", lw=0.4, hatch="////")))
+                if lot.equipamiento:
+                    items.insert(4, ("Equipamiento social (EQ)", dict(fc=COLOR_EQUIP, ec="#3e6d99", lw=0.45)))
                 if cs:
                     items.append((f"Curva de nivel índice (cada {intervalo * 5:g} m)", {"linea": dict(color=COLOR_CURVA, lw=0.55, alpha=0.6)}))
                 h.simbologia((caja_inf[0], caja_inf[1], caja_inf[0] + 78, caja_inf[1] + 9 + 5 * len(items)), items)
@@ -488,6 +510,12 @@ def generar(ruta: str, t: Terreno, malla: Malla | None = None, lot: Resultado | 
                 ("Remanentes", len(lot.remanentes), _fmt(s["area_remanente"]), f"{s['area_remanente'] / tot * 100:.1f} %"),
                 ("TOTAL", "", _fmt(tot), "100.0 %"),
             ]
+            if s.get("area_equipamiento"):
+                filas_areas.insert(3, ("Equipamiento social", len(lot.equipamiento), _fmt(s["area_equipamiento"]),
+                                       f"{s['area_equipamiento'] / tot * 100:.1f} %"))
+            if s.get("area_proteccion"):
+                filas_areas.insert(3, ("Zona de protección", len(lot.protecciones), _fmt(s["area_proteccion"]),
+                                       f"{s['area_proteccion'] / tot * 100:.1f} %"))
             y, _ = _tabla(h.p, x0, MARCO[3] - 3, [("USO", 40, "left"), ("CANT.", 18, "center"), ("ÁREA (m²)", 42, "right"), ("%", 34, "right")],
                           filas_areas, 4.2, "CUADRO DE ÁREAS")
             regla = {"pct_util": f"{lot.parametros['valor_verde']:g} % del área útil",
@@ -500,6 +528,16 @@ def generar(ruta: str, t: Terreno, malla: Malla | None = None, lot: Resultado | 
                 + (f" ({s['lotes_convertidos_a_verde']} lotes inclinados pasados a área verde)." if s["lotes_convertidos_a_verde"] else "."),
                 f"Orientación de calles {lot.angulo:g}°; pendiente media a lo largo de la calle aprox. {s['pendiente_calles_pct']:.1f} %.",
             ], PANEL_W - 6, 5.2, 3.0)
+            if cumplimiento:
+                fc = [(f["regla"], f.get("ref", ""), f["requerido"], f["proyecto"], TEXTO_ESTADO.get(f["estado"], f["estado"]))
+                      for f in cumplimiento]
+                y, _ = _tabla(h.p, x0, y - 1, [("REGLA", 33, "left"), ("BASE", 21, "left"), ("REQUERIDO", 29, "left"),
+                                               ("PROYECTO", 27, "left"), ("ESTADO", 24, "left")],
+                              fc, 4.0, "CUADRO DE CUMPLIMIENTO (referencial)",
+                              color_ultima=lambda fila: next((COLOR_ESTADO[k] for k, v in TEXTO_ESTADO.items() if v == fila[-1]), TINTA))
+                _t(h.p, x0, y - 2.6, "LUC: Ley de Urbanismo y Construcción · RLUC: su Reglamento de parcelaciones (D.E. 70/1991) · "
+                   "Validar con profesional.", 4.4, color="#555")
+                y -= 4
             filas_lotes = [(l["id"], _fmt(l["area"]), _fmt(l["area"] / M2_POR_V2), _fmt(l["frente"], 1),
                             "—" if l["pendiente"] is None else f"{l['pendiente']:.0f}") for l in lot.lotes]
             col_lotes = [("LOTE", 10, "center"), ("m²", 16, "right"), ("v²", 16, "right"), ("FRENTE", 13, "right"), ("PEND.%", 12.5, "right")]

@@ -36,6 +36,8 @@ WhatsApp ─► /webhook ─► agente.py ─► Gemini (conversa y decide)
 | `motor/lamina.py` | Lámina PDF tabloide a escala: planialtimétrico + lotificación |
 | `motor/exportar.py` | KML y DXF |
 | `motor/modelo3d.py` | Maqueta 3D: DXF 3D para renderizar en AutoCAD y vista aérea en imagen |
+| `motor/colindancia.py` | Varios terrenos en un plano: encuentra el lindero común y los une |
+| `motor/normas.py` | Revisión referencial de normas (LUC, Reglamento de parcelaciones, OPAMSS) y cuadro de cumplimiento |
 | `agente.py` | El agente: herramientas, reglas y memoria de la conversación |
 | `servicios/llm.py` | Gemini, y un "modo sin IA" para probar sin llave |
 | `servicios/whatsapp.py` | WhatsApp Cloud API de Meta |
@@ -125,7 +127,8 @@ En WhatsApp escribe `reiniciar` para empezar de cero.
   Las curvas son para ver la forma del terreno, no para diseñar terracería.
 - **Ubicación por pin**: si el plano no trae coordenadas, el pin del celular ubica el terreno con error de varios metros.
 - **Prediseño**: manzanas rectas de doble fondo. No traza calles curvas ni sigue curvas de nivel todavía.
-- **Normativa**: aplica la regla de área verde que le indiques (10 % del área útil o m² por lote). No revisa todas las
-  normas de la DOT u OPAMSS.
+- **Normativa**: revisa área verde, parte recreativa, distancia al área verde, equipamiento social, pendiente de calles,
+  largo de bloque, protección de quebradas (1.5 × profundidad) y calles sin salida, con su artículo. Es referencial: los
+  anexos del Reglamento con anchos de vías y retornos no están en el texto público, y todo lo valida un profesional.
 - **Datos personales**: el bot no transcribe nombres ni DUI/NIT. Los archivos que mandas se procesan en memoria y no se
   guardan en disco; los PDF generados quedan temporalmente en el servidor.

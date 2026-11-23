@@ -27,6 +27,8 @@ CLASES = {
     "lote": ("3D_LOTES", 31, (232, 206, 160)),
     "calle": ("3D_CALLES", 8, (150, 150, 150)),
     "verde": ("3D_AREA_VERDE", 94, (104, 160, 82)),
+    "proteccion": ("3D_PROTECCION", 96, (70, 120, 60)),
+    "equipamiento": ("3D_EQUIPAMIENTO", 151, (176, 200, 226)),
     "muro": ("3D_CASAS_MUROS", 7, (240, 236, 226)),
     "techo": ("3D_CASAS_TECHOS", 14, (170, 72, 52)),
     "base": ("3D_BASE", 33, (176, 140, 104)),
@@ -142,6 +144,7 @@ def construir(t: Terreno, malla: Malla, lot: Resultado | None = None, margen: fl
     clase[shapely.contains_xy(terreno, cx, cy)] = "terreno"
     if lot is not None:
         for nombre, geoms in (("lote", [l["poly"] for l in lot.lotes]), ("verde", [v["poly"] for v in lot.verdes]),
+                              ("proteccion", lot.protecciones), ("equipamiento", [e["poly"] for e in lot.equipamiento]),
                               ("calle", lot.calles)):
             if geoms:
                 u = unary_union(geoms)

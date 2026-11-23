@@ -50,7 +50,7 @@ class Guion(LLM):
             return Respuesta(texto="RESULTADO " + json.dumps(u["resultado"], ensure_ascii=False, default=str))
         t = u["texto"]
         if "[adjunto:" in t:
-            return Respuesta(llamadas=[{"nombre": "leer_plano", "args": {"adjunto": "a1"}}])
+            return Respuesta(llamadas=[{"nombre": "leer_plano", "args": {"adjuntos": ["a1"]}}])
         if t.startswith("corrige"):
             return Respuesta(llamadas=[{"nombre": "corregir_tramo", "args": {"numero": 12, "distancia": 37.01}}])
         if "relieve" in t:
