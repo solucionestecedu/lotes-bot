@@ -1,0 +1,10 @@
+# Lo que no se sube a Cloud Build al publicar
+.git
+.gitignore
+.env
+__pycache__/
+.pytest_cache/
+tests/
+pruebas/
+pruebas_privadas/
+*.pdf

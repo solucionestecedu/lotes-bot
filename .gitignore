@@ -7,3 +7,4 @@ __pycache__/
 *.dxf
 *.kml
 !tests/datos/*
+pruebas_privadas/
