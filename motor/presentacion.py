@@ -830,8 +830,11 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
             candidatos = [(ctr.x - uy * dd, ctr.y + ux * dd), (ctr.x + uy * dd, ctr.y - ux * dd),
                           (ctr.x - ux * dd - uy * dd * 0.6, ctr.y - uy * dd + ux * dd * 0.6),
                           (ctr.x - ux * dd + uy * dd * 0.6, ctr.y - uy * dd - ux * dd * 0.6)]
-            adentro = unary_union([l["poly"] for l in lot.lotes] + list(lot.calles)).buffer(-2)
-            candidatos = [q for q in candidatos if adentro.contains(Point(q))] or candidatos
+            try:
+                adentro = unary_union([g.buffer(0) for g in [l["poly"] for l in lot.lotes] + list(lot.calles)]).buffer(-2)
+                candidatos = [q for q in candidatos if adentro.contains(Point(q))] or candidatos
+            except Exception:  # noqa: BLE001  (geometría con astillas: se usan los candidatos tal cual)
+                pass
             evitar = []
             for v in sorted(lot.verdes, key=lambda v: -v["area"])[:1]:
                 try:

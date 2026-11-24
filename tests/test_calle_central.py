@@ -145,3 +145,26 @@ def test_calle_dentro_del_terreno_mas_grande(union):
     assert calle.intersection(Polygon(a.puntos)).area < 1.0  # ni la calle ni el redondel pisan el terreno A
     lados = {pl["terreno"]: pl for pl in r.stats["por_lado"]}
     assert lados["B"]["lotes"] == 5 and 4 <= lados["A"]["lotes"] <= 5
+
+
+def test_reparto_parejo_por_lado():
+    """La tierra detrás del área verde no se queda toda en el último lote: se reparte entre los de su lado girando
+    los cortes, sin cambiar el frente de cada lote a la calle."""
+    ag = Agente(GuionQuintas(), "/tmp/lotes_reparto")
+    s = Sesion("reparto")
+    ag.atender(s, "plano", [{"mime": "image/jpeg", "nombre": "p.jpg", "datos": b"x"}])
+    ag.atender(s, "unir")
+    ag.atender(s, "quintas")
+    ag.atender(s, "lotes")
+    lot, _ = ag._lotificar(s)
+    fmin = lot.parametros["frente_minimo"]
+    for pl in lot.stats["por_lado"]:
+        areas = [lot.lotes[i - 1]["area"] for i in pl["ids"]]
+        assert max(areas) <= 1.03 * min(areas), (pl["terreno"], areas)
+        assert all(lot.lotes[i - 1]["frente"] >= fmin - 0.01 for i in pl["ids"])
+    assert any(pl["reparto"] == "parejo" for pl in lot.stats["por_lado"])
+    # los lotes no se enciman entre sí
+    polys = [l["poly"] for l in lot.lotes]
+    for i, a in enumerate(polys):
+        for b in polys[i + 1:]:
+            assert a.intersection(b).area < 0.5

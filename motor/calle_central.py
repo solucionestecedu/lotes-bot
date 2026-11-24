@@ -66,17 +66,20 @@ def ejes_candidatos(terreno: Polygon, P: Parametros) -> list[list[tuple[float, f
 
 def lotificar_calle_central(anillo, P: Parametros | None = None, malla: Malla | None = None, excluir: list | None = None,
                             eje: list | None = None, lotes_por_lado=(4, 5), partes: list | None = None,
-                            radio_retorno: float | None = None, calle_sobre: str = "lindero") -> Resultado:
+                            radio_retorno: float | None = None, calle_sobre: str = "lindero",
+                            equilibrar: bool = True) -> Resultado:
     """Calle central sobre `eje` (p. ej. el lindero común). Sin eje se prueban los candidatos y gana el que deja
     más lotes dentro del rango pedido y más área vendible."""
     if eje is not None:
-        return _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio_retorno, calle_sobre)
+        return _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio_retorno, calle_sobre,
+                              equilibrar)
     P = P or Parametros()
     terreno = Polygon(anillo).buffer(0)
     mejor, error = None, None
     for e in ejes_candidatos(_mayor(terreno) if terreno.geom_type != "Polygon" else terreno, P):
         try:
-            r = _calle_central(anillo, P, malla, excluir, e, lotes_por_lado, partes, radio_retorno, "lindero")
+            r = _calle_central(anillo, P, malla, excluir, e, lotes_por_lado, partes, radio_retorno, "lindero",
+                               equilibrar)
         except ErrorLotificacion as ex:
             error = ex
             continue
@@ -89,7 +92,75 @@ def lotificar_calle_central(anillo, P: Parametros | None = None, malla: Malla | 
     return mejor[1]
 
 
-def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio_retorno, calle_sobre="lindero") -> Resultado:
+def _equilibrar_lado(lotes: list, y_eje, calle_b, frente_min: float, area_min: float,
+                     max_grados: float = 35.0) -> list | None:
+    """Reparte parejo el área de los lotes de un lado de la calle girando los cortes: cada corte sigue saliendo del
+    mismo punto en la calle (el frente de cada lote no cambia) y su otro extremo se corre hasta que todos los lotes
+    queden de igual área, sin inclinarse más de `max_grados` respecto a la perpendicular a la calle.
+    Trabaja en el marco girado (calle a lo largo de +x). Devuelve los lotes nuevos o None si no conviene."""
+    U = unary_union(lotes).buffer(0.01, join_style=2).buffer(-0.01, join_style=2)
+    if not isinstance(U, Polygon) or len(lotes) < 2:
+        return None
+    viejas = [l.area for l in lotes]
+    if max(viejas) < 1.06 * min(viejas):
+        return None
+    n = len(lotes)
+    objetivo = U.area / n
+    c = U.centroid
+    signo = 1 if c.y >= y_eje(c.x) else -1
+    x0, y0, x1, y1 = U.bounds
+    y_lejos, y_cerca = (y1 + 5, y0 - 5) if signo > 0 else (y0 - 5, y1 + 5)
+    frentes = []
+    for a, b in zip(lotes, lotes[1:]):
+        comun = a.buffer(0.05).intersection(b.buffer(0.05))
+        pts = [q for g in _poligonos(comun) for q in g.exterior.coords]
+        if not pts:
+            return None
+        frentes.append(min(pts, key=lambda q: abs(q[1] - y_eje(q[0]))))
+
+    def antes(F, bx):
+        def x_en(y):
+            return F[0] + (bx - F[0]) * (y - F[1]) / (y_lejos - F[1])
+        return Polygon([(x0 - 50, y_cerca), (x_en(y_cerca), y_cerca), (x_en(y_lejos), y_lejos), (x0 - 50, y_lejos)])
+
+    tan = math.tan(math.radians(max_grados))
+    cortes, b_prev = [], -math.inf
+    for k, F in enumerate(frentes, start=1):
+        dmax = abs(y_lejos - F[1]) * tan
+        lo, hi = max(F[0] - dmax, b_prev + 0.5), F[0] + dmax
+        if lo >= hi:
+            return None
+        for _ in range(50):
+            m = (lo + hi) / 2
+            if U.intersection(antes(F, m)).area < k * objetivo:
+                lo = m
+            else:
+                hi = m
+        b_prev = (lo + hi) / 2
+        cortes.append(antes(F, b_prev))
+    nuevos, hecho = [], Polygon()
+    for zona in cortes + [None]:
+        hasta = U if zona is None else U.intersection(zona)
+        partes_ = sorted(_poligonos(hasta.difference(hecho)), key=lambda g: -g.area)
+        if not partes_ or sum(g.area for g in partes_[1:]) > 1.0:
+            return None
+        nuevos.append(partes_[0])
+        hecho = hasta
+    if any(l.boundary.intersection(calle_b).length < frente_min or l.area < area_min for l in nuevos):
+        return None
+    import shapely
+
+    nuevos = [_mayor(shapely.set_precision(g, 0.001).buffer(0)) for g in nuevos]  # coordenadas limpias, sin astillas
+    if any(g is None or not isinstance(g, Polygon) for g in nuevos):
+        return None
+    nuevas = [l.area for l in nuevos]
+    if max(nuevas) - min(nuevas) >= max(viejas) - min(viejas) - 1.0:
+        return None
+    return nuevos
+
+
+def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio_retorno, calle_sobre="lindero",
+                   equilibrar: bool = True) -> Resultado:
     P = P or Parametros()
     W = P.calle
     nmin, nmax = sorted(int(x) for x in (list(lotes_por_lado) * 2)[:2])
@@ -430,6 +501,18 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
                     (verdes if g.area >= P.verde_minimo else remanentes).append(g)
         for l in lotes_out:
             l["area"] = l["poly"].area
+    # ---- reparto parejo: la tierra que recibió el lote del fondo (detrás del área verde) se reparte entre los lotes
+    # de su lado girando los cortes; el frente de cada lote a la calle no cambia
+    if equilibrar:
+        for pl in por_lado:
+            idx = [i - 1 for i in pl["ids"]]
+            nuevos = _equilibrar_lado([lotes_out[i]["poly"] for i in idx], y_eje, calle_b, frente_min, P.area_minima)
+            if nuevos:
+                for i, poly in zip(idx, nuevos):
+                    lotes_out[i]["poly"] = poly
+                    lotes_out[i]["area"] = poly.area
+                    lotes_out[i]["frente"] = poly.boundary.intersection(calle_b).length
+                pl["reparto"] = "parejo"
     for pl in por_lado:
         ar = [lotes_out[i - 1]["area"] for i in pl["ids"]]
         pl["lote_m2"] = round(sum(ar) / len(ar), 1)
