@@ -12,8 +12,8 @@ from shapely import affinity
 from shapely.geometry import LineString, MultiLineString, Point, Polygon, box  # noqa: F401
 from shapely.ops import linemerge, unary_union
 
-from .lotificacion import (LADOS, ErrorLotificacion, Parametros, Resultado, _bordes_hacia, _mayor, _poligonos,
-                           area_verde_requerida, punto_de_acceso)
+from .lotificacion import (LADOS, ErrorLotificacion, Parametros, Resultado, _mayor, _poligonos, area_verde_requerida,
+                           punto_de_acceso)
 from .relieve import Malla
 
 
@@ -483,6 +483,8 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
             "lotes_recortados_para_verde": 0, "lotes_partidos": 0,
             "modo": "calle_central", "retorno_diametro_m": 2 * r_ret, "por_lado": por_lado,
             "calle_dentro_de": dentro_de,
+            "entrada_calle": [round(c, 3) for c in desrot(Point(x_ini, y_eje(x_ini))).coords[0]],
+            "retorno_centro": [round(c, 3) for c in desrot(centro_ret).coords[0]],
         },
         parametros={"calle": W, "frente_minimo": round(frente_min, 1), "area_minima": P.area_minima,
                     "regla_verde": P.regla_verde, "valor_verde": P.valor_verde, "modo": "calle_central",

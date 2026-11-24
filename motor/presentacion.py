@@ -261,30 +261,39 @@ def calco_planta(t: Terreno, lot: Resultado, malla: Malla | None = None, ficha: 
     poli(prop, outline=C["lindero"], ancho_m=0.55, min_px=3)
 
     # portón y caseta (solo dibujo) donde la calle entra al terreno
-    if ficha.get("cerrado") and calles is not None:
+    tramos = []
+    if calles is not None:
         boca = calles.boundary.intersection(prop.exterior.buffer(0.4))
         tramos = [g for g in getattr(boca, "geoms", [boca]) if g.geom_type == "LineString" and g.length > 1]
-        if tramos:
+    if tramos:  # la boca de la calle: la que da al acceso (no la del retorno, que también puede tocar el lindero)
+        ent = lot.stats.get("entrada_calle")
+        if ent:
+            boca = min(tramos, key=lambda g: g.distance(Point(ent)))
+        elif extra.get("acceso") is not None:
+            boca = min(tramos, key=lambda g: g.distance(extra["acceso"]))
+        else:
             boca = max(tramos, key=lambda g: g.length)
-            pa, pb = boca.coords[0], boca.coords[-1]
-            mid = ((pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2)
-            hacia = nearest_points(Point(mid), calles.buffer(-2.5))[1] if not calles.buffer(-2.5).is_empty else calles.centroid
-            nx_, ny_ = hacia.x - mid[0], hacia.y - mid[1]
-            nl = math.hypot(nx_, ny_) or 1
-            nx_, ny_ = nx_ / nl, ny_ / nl
-            gate = LineString([(pa[0] + nx_ * 4, pa[1] + ny_ * 4), (pb[0] + nx_ * 4, pb[1] + ny_ * 4)])
-            gate = gate.intersection(calles)
-            if not gate.is_empty:
-                linea(list(getattr(gate, "coords", [])) or list(gate.geoms[0].coords), C["porton"], 0.6, 3)
-            ex, ey = pa[0] - pb[0], pa[1] - pb[1]
-            el = math.hypot(ex, ey) or 1
-            ex, ey = ex / el, ey / el
-            bx, by = pa[0] + nx_ * 6.5 - ex * 1.6, pa[1] + ny_ * 6.5 - ey * 1.6
-            caseta = Polygon([(bx + sx * 1.3 * ex + sy * 1.6 * nx_, by + sx * 1.3 * ey + sy * 1.6 * ny_)
-                              for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))])
-            poli(caseta, fill=C["caseta"], outline=C["porton"], ancho_m=0.15, min_px=2)
-            extra["porton"] = (bx, by)
-            extra["boca"] = mid
+        pa, pb = boca.coords[0], boca.coords[-1]
+        extra["boca"] = ((pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2)
+    if ficha.get("cerrado") and tramos:
+        pa, pb = boca.coords[0], boca.coords[-1]
+        mid = ((pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2)
+        hacia = nearest_points(Point(mid), calles.buffer(-2.5))[1] if not calles.buffer(-2.5).is_empty else calles.centroid
+        nx_, ny_ = hacia.x - mid[0], hacia.y - mid[1]
+        nl = math.hypot(nx_, ny_) or 1
+        nx_, ny_ = nx_ / nl, ny_ / nl
+        gate = LineString([(pa[0] + nx_ * 4, pa[1] + ny_ * 4), (pb[0] + nx_ * 4, pb[1] + ny_ * 4)])
+        gate = gate.intersection(calles)
+        if not gate.is_empty:
+            linea(list(getattr(gate, "coords", [])) or list(gate.geoms[0].coords), C["porton"], 0.6, 3)
+        ex, ey = pa[0] - pb[0], pa[1] - pb[1]
+        el = math.hypot(ex, ey) or 1
+        ex, ey = ex / el, ey / el
+        bx, by = pa[0] + nx_ * 6.5 - ex * 1.6, pa[1] + ny_ * 6.5 - ey * 1.6
+        caseta = Polygon([(bx + sx * 1.3 * ex + sy * 1.6 * nx_, by + sx * 1.3 * ey + sy * 1.6 * ny_)
+                          for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))])
+        poli(caseta, fill=C["caseta"], outline=C["porton"], ancho_m=0.15, min_px=2)
+        extra["porton"] = (bx, by)
 
     img = img.resize((W, H), Image.LANCZOS)
     a_px = lambda x, y: px(x, y, 1)  # noqa: E731
@@ -582,8 +591,9 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
         eje_ang = lot.angulo
         nombre_c = "CALLE CENTRAL" if st.get("modo") == "calle_central" else "CALLE"
         tam_c = max(13, min(30, m * 2.6))
-        if boca is not None:
-            lejos = max((Point(c) for c in calle.exterior.coords), key=lambda q: q.distance(Point(boca)))
+        if boca is not None and st.get("modo") == "calle_central" and calle.geom_type == "Polygon":
+            ret = st.get("retorno_centro")
+            lejos = Point(ret) if ret else max((Point(c) for c in calle.exterior.coords), key=lambda q: q.distance(Point(boca)))
             espina = LineString([boca, (lejos.x, lejos.y)])
             p = calle.intersection(espina.interpolate(0.42, normalized=True).buffer(ancho_c)).centroid
             ang = math.degrees(math.atan2(lejos.y - boca[1], lejos.x - boca[0]))
@@ -596,9 +606,14 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
         _texto_girado(img, dib.a_px(p.x, p.y), f"{nombre_c} · {ancho_c:.2f} m", tam_c, ang)
         if st.get("retorno_diametro_m") and espina is not None:
             rr = st["retorno_diametro_m"] / 2
-            ctr = espina.interpolate(max(0.0, espina.length - rr))
+            ctr = Point(st["retorno_centro"]) if st.get("retorno_centro") else espina.interpolate(max(0.0, espina.length - rr))
             ux, uy = (lejos.x - boca[0]) / espina.length, (lejos.y - boca[1]) / espina.length
-            candidatos = [(ctr.x - uy * (rr + 14), ctr.y + ux * (rr + 14)), (ctr.x + uy * (rr + 14), ctr.y - ux * (rr + 14))]
+            dd = rr + 14
+            candidatos = [(ctr.x - uy * dd, ctr.y + ux * dd), (ctr.x + uy * dd, ctr.y - ux * dd),
+                          (ctr.x - ux * dd - uy * dd * 0.6, ctr.y - uy * dd + ux * dd * 0.6),
+                          (ctr.x - ux * dd + uy * dd * 0.6, ctr.y - uy * dd - ux * dd * 0.6)]
+            adentro = unary_union([l["poly"] for l in lot.lotes] + list(lot.calles)).buffer(-2)
+            candidatos = [q for q in candidatos if adentro.contains(Point(q))] or candidatos
             ocupado = []
             for v in sorted(lot.verdes, key=lambda v: -v["area"])[:1]:
                 try:

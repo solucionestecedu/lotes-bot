@@ -141,3 +141,22 @@ def test_rechaza_calle_inventada_sobre_el_area_verde(quintas):
     assert not ok and "área verde" in motivo
     img, info = presentacion.pintar(d, lambda png, i, a_: _png(mala), presentacion.INSTRUCCION_PLANTA)
     assert not info["ia"] and "calco" in info["motivo"]
+
+
+def test_porton_en_la_entrada_y_no_en_el_retorno():
+    """Caso real: un solo terreno donde el redondel toca el lindero; el portón iba al revés."""
+    from motor.calle_central import lotificar_calle_central
+    from motor.lotificacion import Parametros, franja_de_proteccion
+    from motor.terreno import desde_texto_rumbos
+    from shapely.geometry import Point
+    from test_normas import _txt
+
+    a, _ = desde_texto_rumbos(_txt("plano_a.txt"))
+    P = Parametros.de_dict(dict(frente=20, fondo=35, area_minima=400, lado_acceso="norte"))
+    lot = lotificar_calle_central(a.puntos, P, None, [franja_de_proteccion(a.puntos, "sur", 12.0)], lotes_por_lado=(4, 5))
+    ficha = {"acceso_lado": "norte", "cerrado": True, "quebradas": [{"lado": "sur", "profundidad_m": 8}]}
+    d = presentacion.calco_planta(a, lot, None, ficha)
+    ent, ret = Point(lot.stats["entrada_calle"]), Point(lot.stats["retorno_centro"])
+    boca, porton = Point(d.extra["boca"]), Point(d.extra["porton"])
+    assert boca.distance(ent) < boca.distance(ret)
+    assert porton.distance(ent) < porton.distance(ret)
