@@ -3,7 +3,7 @@
     python pruebas/probar_presentacion.py [modelo_imagen ...]
 
 Arma las quintas A+B (calle en medio, quebrada al fondo), baja el relieve real, pinta planta y aérea con cada
-modelo y deja todo en /tmp/presentacion/<modelo>/ (calco, lo que devolvió el modelo y la imagen final).
+modelo (planta revisada, ambiente libre y plano técnico) y deja todo en /tmp/presentacion/<modelo>/ (calco, lo que devolvió el modelo y la imagen final).
 """
 import json
 import os
@@ -45,7 +45,8 @@ def main():
         os.environ["PRESENTACION_CRUDO"] = carpeta
         if reusar:
             def pintor(png, instruccion, aspecto, carpeta=carpeta):
-                vista = "aerea" if aspecto == "16:9" else "planta"
+                vista = ("ambiente" if instruccion == presentacion.INSTRUCCION_AMBIENTE
+                         else "aerea" if aspecto == "16:9" else "planta")
                 with open(os.path.join(carpeta, f"{vista}-modelo.png"), "rb") as f:
                     return f.read()
             os.environ.pop("PRESENTACION_CRUDO", None)

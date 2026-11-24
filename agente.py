@@ -273,10 +273,11 @@ FLUJO:
    (qué cumple, qué no, qué falta revisar, con su artículo). Con calle central di cuántos lotes quedan de cada lado (o de
    cada terreno), su área y frente, y la alternativa que traiga "alternativas" (por ejemplo con 4 en vez de 5). Si algo no cumple, propone cómo arreglarlo y pregunta antes
    de rehacer.
-6. ENTREGABLES → generar_entregables: imagen de presentación en planta y vista aérea (tipo plano de ventas), lámina
-   PDF con el cuadro de cumplimiento, KML, DXF 2D y DXF 3D. Pide nombre del proyecto y municipio si no los tienes. Las
-   imágenes de presentación son ilustrativas: di que los números son del motor y que las medidas válidas están en la
-   lámina; si "pintada_con_ia" es false, solo menciona que salió con el trazo del motor.
+6. ENTREGABLES → generar_entregables: imagen de ambiente (vista aérea pintada con IA, ilustrativa y no a escala),
+   plano de presentación con medidas, plano técnico, lámina PDF con el cuadro de cumplimiento, KML, DXF 2D y DXF 3D.
+   Pide nombre del proyecto y municipio si no los tienes. Di en una línea que la imagen de ambiente es solo para
+   dar idea del proyecto (la IA la pinta libre) y que las medidas y áreas están en los planos y la lámina, que son del
+   motor; si la planta tiene "pintada_con_ia" en false, solo menciona que salió con el trazo del motor.
 
 MÁXIMO APROVECHAMIENTO (lo que buscan los desarrolladores):
 - predisenar ya lo hace por defecto: pone el área verde en la tierra menos vendible (la franja de la quebrada cuenta como
@@ -889,7 +890,7 @@ class Agente:
         archivos.append((dxf, "Plano 2D para AutoCAD / Civil 3D (coordenadas Lambert SIRGAS)"))
         if m is not None and t.ubicado:
             escena = modelo3d.construir(t, m, lot)
-            if not any(p["vista"] == "aerea" for p in presentacion_):  # la aérea de presentación ya es la vista 3D
+            if not any(p["vista"] in ("aerea", "ambiente") for p in presentacion_):  # ya hay vista aérea
                 jpg = os.path.join(carpeta, f"{base}-vista-3d.jpg")
                 sub = (f"{len(lot.lotes)} lotes · " if lot else "") + (s.proyecto.get("ubicacion") or "")
                 modelo3d.vista(jpg, escena, t, nombre, sub.strip(" ·"), malla=m)
@@ -907,8 +908,8 @@ class Agente:
         if presentacion_:
             out["presentacion"] = [{"vista": p["vista"], "pintada_con_ia": p["ia"], **({"motivo": p["motivo"]} if p.get("motivo") else {})}
                                    for p in presentacion_]
-            out["nota_presentacion"] = ("Las imágenes de presentación son ilustrativas: el trazo y los números son del "
-                                        "motor; la IA solo pinta. Las medidas válidas están en la lámina.")
+            out["nota_presentacion"] = ("La imagen de ambiente es ilustrativa y no a escala (la IA la pinta libre). Los "
+                                        "planos de presentación y la lámina llevan el trazo y los números del motor.")
         return out
 
 

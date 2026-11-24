@@ -50,6 +50,18 @@ C = {
     "porton": (60, 60, 64), "caseta": (236, 232, 222), "acceso": (150, 150, 146),
 }
 
+# plano técnico: blanco y negro con acentos suaves (verde, agua), como plano de arquitectura
+T = {
+    "papel": (255, 255, 255), "entorno": (255, 255, 255), "curva": (150, 150, 150), "terreno": (255, 255, 255),
+    "lote": (255, 255, 255), "borde_lote": (25, 25, 25), "lindero": (0, 0, 0), "calle": (226, 226, 226),
+    "cordon": (35, 35, 35), "verde": (226, 241, 216), "proteccion": (206, 229, 196), "agua": (70, 130, 200),
+    "monte": (206, 229, 196), "techo": (255, 255, 255), "cumbrera": (40, 40, 40), "sombra": (0, 0, 0, 38),
+    "arbol": (238, 245, 233), "arbol2": (232, 242, 226), "borde_arbol": (105, 140, 95), "camino": (240, 240, 240),
+    "porton": (0, 0, 0), "caseta": (255, 255, 255), "acceso": (214, 214, 214), "alberca": (214, 234, 248),
+    "rejilla": (232, 232, 232),
+}
+C["alberca"] = (96, 176, 222)
+
 
 @dataclass
 class Dibujo:
@@ -95,8 +107,12 @@ def _puntos_dentro(poly, n, rng, sep):
 
 # --------------------------------------------------------------------------------------------- planta
 def calco_planta(t: Terreno, lot: Resultado, malla: Malla | None = None, ficha: dict | None = None,
-                 lado_largo: int = LADO_LARGO) -> Dibujo:
+                 lado_largo: int = LADO_LARGO, estilo: str = "pintura") -> Dibujo:
+    """Trazo exacto de la planta. estilo "pintura": colores para que la IA lo pinte; "tecnico": plano blanco y negro
+    de presentación (se entrega tal cual, sin IA)."""
     ficha = ficha or {}
+    tec = estilo == "tecnico"
+    P = T if tec else C
     prop = Polygon(t.puntos).buffer(0)
     x0, y0, x1, y1 = prop.bounds
     w, h = x1 - x0, y1 - y0
@@ -116,7 +132,7 @@ def calco_planta(t: Terreno, lot: Resultado, malla: Malla | None = None, ficha: 
     def px(x, y, s=S):
         return ((ox + (x - cx) * k) * s, (oy - (y - cy) * k) * s)
 
-    img = Image.new("RGB", (W * S, H * S), C["papel"])
+    img = Image.new("RGB", (W * S, H * S), P["papel"])
     d = ImageDraw.Draw(img, "RGBA")
     m2px = k * S  # píxeles (supermuestreo) por metro
 
@@ -126,7 +142,7 @@ def calco_planta(t: Terreno, lot: Resultado, malla: Malla | None = None, ficha: 
             if fill is not None:
                 d.polygon(pts, fill=fill)
                 for hoyo in hoyos:
-                    d.polygon([px(*p) for p in hoyo], fill=C["papel"])
+                    d.polygon([px(*p) for p in hoyo], fill=P["papel"])
             if outline is not None:
                 d.line(pts + [pts[0]], fill=outline, width=max(min_px, int(ancho_m * m2px)), joint="curve")
 
@@ -134,17 +150,35 @@ def calco_planta(t: Terreno, lot: Resultado, malla: Malla | None = None, ficha: 
         d.line([px(*p) for p in coords], fill=color, width=max(min_px, int(ancho_m * m2px)), joint="curve")
 
     rng = random.Random(len(t.puntos) * 7919 + int(prop.area))
+
+    def arbol(q, rr, rng_):
+        if tec:  # símbolo de árbol en planta: círculo con copa interior
+            d.ellipse([q[0] - rr, q[1] - rr, q[0] + rr, q[1] + rr], fill=P["arbol"], outline=P["borde_arbol"],
+                      width=max(1, int(rr * 0.12)))
+            r2 = rr * 0.45
+            d.ellipse([q[0] - r2, q[1] - r2, q[0] + r2, q[1] + r2], outline=P["borde_arbol"], width=max(1, int(rr * 0.08)))
+        else:
+            _arbol(d, q, rr, rng_)
     dibujo_geo = box(cx - (W / 2) / k, cy - (oy - zona[1]) / k, cx + (W / 2) / k, cy + (zona[3] - oy) / k)
 
     # entorno (solo en la zona de dibujo) y curvas de nivel
-    d.rectangle([0, zona[1] * S, W * S, zona[3] * S], fill=C["entorno"])
+    d.rectangle([0, zona[1] * S, W * S, zona[3] * S], fill=P["entorno"])
+    rejilla = None
+    if tec:
+        gx0, gy0, gx1, gy1 = dibujo_geo.bounds
+        paso_g = next(v for v in (10, 20, 25, 50, 100, 200, 500) if (gx1 - gx0) / v <= 12)
+        rejilla = (paso_g, gx0, gy0, gx1, gy1)
+        for gx in range(int(math.ceil(gx0 / paso_g)), int(gx1 // paso_g) + 1):
+            linea([(gx * paso_g, gy0), (gx * paso_g, gy1)], P["rejilla"], 0.0, 2)
+        for gy in range(int(math.ceil(gy0 / paso_g)), int(gy1 // paso_g) + 1):
+            linea([(gx0, gy * paso_g), (gx1, gy * paso_g)], P["rejilla"], 0.0, 2)
     if malla is not None:
         try:
             st = estadisticas(malla, t.puntos)
             iv = intervalo_curvas(st["desnivel"])
             for c in curvas(malla, iv, recorte=dibujo_geo):
                 for ln in c["lineas"]:
-                    linea(ln, C["curva"] + ((150,) if c["indice"] else (90,)), 0.25 if c["indice"] else 0.12, 1)
+                    linea(ln, P["curva"] + ((150,) if c["indice"] else (90,)), 0.25 if c["indice"] else 0.12, 1)
         except Exception:  # noqa: BLE001
             log.exception("curvas para la presentación")
 
@@ -167,7 +201,7 @@ def calco_planta(t: Terreno, lot: Resultado, malla: Malla | None = None, ficha: 
         if bordes:
             via = linemerge(unary_union(bordes)).buffer(8.0, cap_style=2, join_style=1)
             via = via.difference(prop.buffer(0.6)).intersection(dibujo_geo)
-            poli(via, fill=C["acceso"])
+            poli(via, fill=P["acceso"])
             extra["acceso"] = max(_poligonos(via), key=lambda g: g.area, default=None)
     lado_q = None
     for q in ficha.get("quebradas") or []:
@@ -179,9 +213,9 @@ def calco_planta(t: Terreno, lot: Resultado, malla: Malla | None = None, ficha: 
         if bordes:
             orilla = linemerge(unary_union([LineString(b) for b in bordes]))
             monte = orilla.buffer(12).difference(prop.buffer(0.4)).intersection(dibujo_geo)
-            poli(monte, fill=C["proteccion"])
-            for p in _puntos_dentro(monte, int(monte.area / 40), rng, 3.5):
-                _arbol(d, px(*p), rng.uniform(2.2, 3.4) * m2px, rng)
+            poli(monte, fill=P["proteccion"])
+            for p in _puntos_dentro(monte, int(monte.area / (90 if tec else 40)), rng, 5.0 if tec else 3.5):
+                arbol(px(*p), rng.uniform(2.2, 3.4) * m2px, rng)
             agua = []
             for g in getattr(orilla, "geoms", [orilla]):
                 try:
@@ -202,26 +236,26 @@ def calco_planta(t: Terreno, lot: Resultado, malla: Malla | None = None, ficha: 
                         tl = math.hypot(tx, ty) or 1
                         w_ = 1.6 * math.sin(2 * math.pi * s_ / 28.0)
                         ondula.append((p.x - ty / tl * w_, p.y + tx / tl * w_))
-                    linea(ondula, C["agua"], 1.8, 3)
+                    linea(ondula, P["agua"], 0.7 if tec else 1.8, 2 if tec else 3)
             extra["quebrada"] = max(agua, key=lambda a: a.length) if agua else None
 
     # terreno, protección, área verde, lotes
-    poli(prop, fill=C["terreno"])
+    poli(prop, fill=P["terreno"])
     for p in lot.protecciones:
-        poli(p, fill=C["proteccion"])
-        for q in _puntos_dentro(p, int(p.area / 28), rng, 3.0):
-            _arbol(d, px(*q), rng.uniform(2.0, 3.2) * m2px, rng)
+        poli(p, fill=P["proteccion"])
+        for q in _puntos_dentro(p, int(p.area / (70 if tec else 28)), rng, 4.5 if tec else 3.0):
+            arbol(px(*q), rng.uniform(2.0, 3.2) * m2px, rng)
     for v in lot.verdes:
-        poli(v["poly"], fill=C["verde"])
+        poli(v["poly"], fill=P["verde"])
     for e in lot.equipamiento:
         poli(e["poly"], fill=(206, 220, 236))
     for l in lot.lotes:
-        poli(l["poly"], fill=C["lote"])
+        poli(l["poly"], fill=P["lote"])
 
     # calles con cordón
     calles = unary_union(lot.calles) if lot.calles else None
     for c_ in lot.calles:
-        poli(c_, fill=C["calle"], outline=C["cordon"], ancho_m=0.35, min_px=2)
+        poli(c_, fill=P["calle"], outline=P["cordon"], ancho_m=0.35, min_px=2)
 
     # caminos de entrada y casas tipo (con sombra), árboles en los patios
     casas = []
@@ -235,31 +269,60 @@ def calco_planta(t: Terreno, lot: Resultado, malla: Malla | None = None, ficha: 
             frente = LineString([esq[0], esq[1]])
             a, b = nearest_points(frente, calles)
             camino = LineString([(a.x, a.y), (b.x, b.y)]).buffer(1.4, cap_style=2).intersection(l["poly"])
-            poli(camino, fill=C["camino"])
+            poli(camino, fill=P["camino"])
+    albercas = []
     for l, casa in casas:
+        esq = list(casa.exterior.coords)[:4]   # frente izq., frente der., fondo der., fondo izq.
+        if l["area"] >= 350:  # alberca detrás de la casa, si cabe
+            ux_, uy_ = esq[1][0] - esq[0][0], esq[1][1] - esq[0][1]
+            largo = math.hypot(ux_, uy_) or 1
+            ux_, uy_ = ux_ / largo, uy_ / largo
+            nx_, ny_ = esq[3][0] - esq[0][0], esq[3][1] - esq[0][1]
+            prof_c = math.hypot(nx_, ny_) or 1
+            nx_, ny_ = nx_ / prof_c, ny_ / prof_c
+            pl, pd = min(8.0, largo * 0.6), 3.6
+            cx_ = (esq[2][0] + esq[3][0]) / 2 + nx_ * (2.8 + pd / 2)
+            cy_ = (esq[2][1] + esq[3][1]) / 2 + ny_ * (2.8 + pd / 2)
+            alb = Polygon([(cx_ + sx * ux_ * pl / 2 + sy * nx_ * pd / 2, cy_ + sx * uy_ * pl / 2 + sy * ny_ * pd / 2)
+                           for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))])
+            if l["poly"].buffer(-1.2).contains(alb) and (calles is None or alb.distance(calles) > 3):
+                albercas.append(alb)
+                extra.setdefault("albercas", {})[l["id"]] = alb
+                poli(alb.buffer(1.0, join_style=2), fill=P["camino"])
+                poli(alb, fill=P["alberca"], outline=P["cumbrera"] if tec else (240, 248, 252), ancho_m=0.15, min_px=1)
         sombra = Polygon([(x + 1.0, y - 1.0) for x, y in casa.exterior.coords])
-        poli(sombra, fill=C["sombra"])
-        poli(casa, fill=C["techo"], outline=C["cumbrera"], ancho_m=0.12, min_px=1)
-        esq = list(casa.exterior.coords)[:4]
+        poli(sombra, fill=P["sombra"])
+        poli(casa, fill=P["techo"], outline=P["cumbrera"], ancho_m=0.12, min_px=1)
+        # techo a cuatro aguas: cumbrera centrada y limatesas a las esquinas
         m0 = ((esq[0][0] + esq[3][0]) / 2, (esq[0][1] + esq[3][1]) / 2)
         m1 = ((esq[1][0] + esq[2][0]) / 2, (esq[1][1] + esq[2][1]) / 2)
-        linea([m0, m1], C["cumbrera"], 0.18, 1)
+        lg = math.dist(m0, m1) or 1
+        pr = math.dist(esq[0], esq[3])
+        ex_, ey_ = (m1[0] - m0[0]) / lg, (m1[1] - m0[1]) / lg
+        recorte = min(pr / 2, lg / 2)
+        r0 = (m0[0] + ex_ * recorte, m0[1] + ey_ * recorte)
+        r1 = (m1[0] - ex_ * recorte, m1[1] - ey_ * recorte)
+        linea([r0, r1], P["cumbrera"], 0.18, 1)
+        for e_, r_ in ((esq[0], r0), (esq[3], r0), (esq[1], r1), (esq[2], r1)):
+            linea([e_, r_], P["cumbrera"], 0.1, 1)
     for l in lot.lotes:
         libre = l["poly"].buffer(-1.5)
         for _, casa in casas:
             libre = libre.difference(casa.buffer(2.5))
+        for alb in albercas:
+            libre = libre.difference(alb.buffer(2.0))
         if calles is not None:
             libre = libre.difference(calles.buffer(6))
         for q in _puntos_dentro(libre, max(1, min(4, int(l["area"] / 350))), rng, 6):
-            _arbol(d, px(*q), rng.uniform(1.8, 2.8) * m2px, rng)
+            arbol(px(*q), rng.uniform(1.8, 2.8) * m2px, rng)
     for v in lot.verdes:
         for q in _puntos_dentro(v["poly"].buffer(-1.5), int(v["area"] / 90), rng, 6):
-            _arbol(d, px(*q), rng.uniform(2.0, 3.0) * m2px, rng)
+            arbol(px(*q), rng.uniform(2.0, 3.0) * m2px, rng)
 
     # linderos de lotes y del terreno
     for l in lot.lotes:
-        poli(l["poly"], outline=C["borde_lote"], ancho_m=0.22, min_px=2)
-    poli(prop, outline=C["lindero"], ancho_m=0.55, min_px=3)
+        poli(l["poly"], outline=P["borde_lote"], ancho_m=0.22, min_px=2)
+    poli(prop, outline=P["lindero"], ancho_m=0.55, min_px=3)
 
     # portón y caseta (solo dibujo) donde la calle entra al terreno
     tramos = []
@@ -286,14 +349,14 @@ def calco_planta(t: Terreno, lot: Resultado, malla: Malla | None = None, ficha: 
         gate = LineString([(pa[0] + nx_ * 4, pa[1] + ny_ * 4), (pb[0] + nx_ * 4, pb[1] + ny_ * 4)])
         gate = gate.intersection(calles)
         if not gate.is_empty:
-            linea(list(getattr(gate, "coords", [])) or list(gate.geoms[0].coords), C["porton"], 0.6, 3)
+            linea(list(getattr(gate, "coords", [])) or list(gate.geoms[0].coords), P["porton"], 0.6, 3)
         ex, ey = pa[0] - pb[0], pa[1] - pb[1]
         el = math.hypot(ex, ey) or 1
         ex, ey = ex / el, ey / el
         bx, by = pa[0] + nx_ * 6.5 - ex * 1.6, pa[1] + ny_ * 6.5 - ey * 1.6
         caseta = Polygon([(bx + sx * 1.3 * ex + sy * 1.6 * nx_, by + sx * 1.3 * ey + sy * 1.6 * ny_)
                           for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))])
-        poli(caseta, fill=C["caseta"], outline=C["porton"], ancho_m=0.15, min_px=2)
+        poli(caseta, fill=P["caseta"], outline=P["porton"], ancho_m=0.15, min_px=2)
         extra["porton"] = (bx, by)
 
     img = img.resize((W, H), Image.LANCZOS)
@@ -324,7 +387,10 @@ def calco_planta(t: Terreno, lot: Resultado, malla: Malla | None = None, ficha: 
     linderos = [[a_px(*p) for p in l["poly"].exterior.coords] for l in lot.lotes]
     linderos.append([a_px(*p) for p in prop.exterior.coords])
     extra["casas"] = {l["id"]: casa for l, casa in casas}
-    return Dibujo("planta", img, aspecto, a_px, linderos, 1 / k, zona, extra)
+    if rejilla:
+        extra["rejilla"] = rejilla
+        extra["ubicado"] = bool(getattr(t, "ubicado", False))
+    return Dibujo("tecnica" if tec else "planta", img, aspecto, a_px, linderos, 1 / k, zona, extra)
 
 
 def _arbol(d: ImageDraw.ImageDraw, q, rr, rng):
@@ -380,6 +446,18 @@ INSTRUCCION_AEREA = (
     "and must stay vegetation. Do not write any text, letters, numbers, labels, logos or watermarks. Style: late-morning tropical light, "
     "lush green lawns on the lots, simple modern one-storey houses with terracotta roofs, grey asphalt road, dense "
     "tropical forest in the dark green protected strip, soft blue sky."
+)
+
+INSTRUCCION_AMBIENTE = (
+    "You are given a simple 3D massing model, seen from the air, of a small gated country-house (quinta) subdivision "
+    "on a hillside in El Salvador. Use it as the layout and camera guide and turn it into a premium, photorealistic "
+    "real-estate marketing aerial rendering. Keep the same camera angle and framing, the same single access road "
+    "ending in its round turnaround, the same number of houses in roughly the same places, the lot boundaries, and "
+    "the protected ravine forest along the creek. You may freely improve everything else: varied contemporary one- "
+    "and two-storey tropical houses with large windows and terraces, a swimming pool behind each house, lush "
+    "landscaped gardens with palms and mature tropical trees, a small gatehouse at the entrance, warm golden-hour "
+    "sunlight with long soft shadows, rolling green hills and a hazy sky in the background. Do NOT add other streets, "
+    "lots or houses. Do not write any text, letters, numbers, labels, logos or watermarks."
 )
 
 
@@ -460,18 +538,21 @@ def clases_ok(medidas: dict) -> tuple[bool, str]:
     return True, ""
 
 
-def pintar(dibujo: Dibujo, pintor: Callable | None, instruccion: str, intentos: int = 2) -> tuple[Image.Image, dict]:
-    """Devuelve (imagen, info). Si el modelo falla o cambia el dibujo se reintenta; si sigue mal, el calco."""
+def pintar(dibujo: Dibujo, pintor: Callable | None, instruccion: str, intentos: int = 2,
+           revisar: bool = True) -> tuple[Image.Image, dict]:
+    """Devuelve (imagen, info). Si el modelo falla o cambia el dibujo se reintenta; si sigue mal, el calco.
+    Con revisar=False (imagen de ambiente) no se exige que respete el trazo: solo se usa como guía."""
     info = {}
     for k in range(intentos):
-        img, info = _pintar_una(dibujo, pintor, instruccion)
+        img, info = _pintar_una(dibujo, pintor, instruccion, revisar)
         info["intentos"] = k + 1
         if info["ia"] or pintor is None:
             break
     return img, info
 
 
-def _pintar_una(dibujo: Dibujo, pintor: Callable | None, instruccion: str) -> tuple[Image.Image, dict]:
+def _pintar_una(dibujo: Dibujo, pintor: Callable | None, instruccion: str,
+                revisar: bool = True) -> tuple[Image.Image, dict]:
     info = {"ia": False}
     if pintor is None:
         info["motivo"] = "sin modelo de imagen"
@@ -497,6 +578,9 @@ def _pintar_una(dibujo: Dibujo, pintor: Callable | None, instruccion: str) -> tu
     except Exception:  # noqa: BLE001
         info["motivo"] = "la imagen del modelo no se pudo abrir"
         return dibujo.imagen, info
+    if not revisar:
+        info["ia"] = True
+        return pintada, info
     ok, medidas, pintada = alinear(dibujo.imagen, pintada, dibujo.zona)
     info.update(medidas)
     if not ok:
@@ -610,7 +694,8 @@ def _titulo(lot: Resultado, ficha: dict, partes: list | None) -> tuple[str, str]
 
 
 def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, proyecto: str,
-                   partes: list | None = None, ia: bool = False) -> Image.Image:
+                   partes: list | None = None, ia: bool = False, estilo: str = "pintura") -> Image.Image:
+    tec = estilo == "tecnico"
     img = img.convert("RGBA")
     W, H = img.size
     d = ImageDraw.Draw(img, "RGBA")
@@ -626,19 +711,40 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
 
     ocupado: list = []  # lo que ya tiene letrero (en píxeles): las medidas de los linderos no se le enciman
 
-    # linderos de los lotes (encima de la pintura, exactos): línea blanca con sombra; el del terreno, oscuro
+    # linderos de los lotes (encima de la pintura, exactos): línea blanca con sombra; el del terreno, oscuro.
+    # En el plano técnico: líneas negras, y la del terreno más gruesa
     capa = Image.new("RGBA", img.size, (0, 0, 0, 0))
     dl = ImageDraw.Draw(capa)
     ancho = max(2, round(m * 0.4))
     contornos = [[dib.a_px(*q) for q in ext] for l in lot.lotes for ext, _ in _anillos(l["poly"])]
-    for pts in contornos:
-        dl.line(pts + [pts[0]], fill=(30, 24, 16, 120), width=ancho + 3, joint="curve")
-    for pts in contornos:
-        dl.line(pts + [pts[0]], fill=(255, 255, 255, 235), width=ancho, joint="curve")
+    if tec:
+        for pts in contornos:
+            dl.line(pts + [pts[0]], fill=(20, 20, 20, 255), width=max(2, round(m * 0.25)), joint="curve")
+    else:
+        for pts in contornos:
+            dl.line(pts + [pts[0]], fill=(30, 24, 16, 120), width=ancho + 3, joint="curve")
+        for pts in contornos:
+            dl.line(pts + [pts[0]], fill=(255, 255, 255, 235), width=ancho, joint="curve")
     if dib.linderos_px:
         per = list(dib.linderos_px[-1])
-        dl.line(per + [per[0]], fill=(70, 50, 34, 255), width=ancho + 2, joint="curve")
+        dl.line(per + [per[0]], fill=(0, 0, 0, 255) if tec else (70, 50, 34, 255), width=ancho + (4 if tec else 2),
+                joint="curve")
     img.alpha_composite(capa)
+    if tec:  # marco del plano y coordenadas de la rejilla
+        d.rectangle([dib.zona[0] + 3, dib.zona[1], dib.zona[2] - 4, dib.zona[3]], outline=(0, 0, 0), width=3)
+        rej = dib.extra.get("rejilla")
+        if rej and dib.extra.get("ubicado"):
+            paso_g, gx0, gy0, gx1, gy1 = rej
+            fg = max(11, int(m * 1.3))
+            for gx in range(int(math.ceil(gx0 / paso_g)), int(gx1 // paso_g) + 1):
+                x, _ = dib.a_px(gx * paso_g, gy1)
+                if dib.zona[0] + 60 < x < dib.zona[2] - 60:
+                    _texto(d, (x, dib.zona[1] + fg * 1.1), f"E {gx * paso_g:,.0f}", fg, False, (120, 120, 120), borde=2)
+            for gy in range(int(math.ceil(gy0 / paso_g)), int(gy1 // paso_g) + 1):
+                _, y = dib.a_px(gx0, gy * paso_g)
+                if dib.zona[1] + 60 < y < dib.zona[3] - 60:
+                    _texto(d, (dib.zona[0] + 12, y), f"N {gy * paso_g:,.0f}", fg, False, (120, 120, 120), anchor="lm",
+                           borde=2)
 
     # lotes: número y área en una etiqueta
     tam = max(13, min(30, m * 3.0))
@@ -649,6 +755,9 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
         libre = poly.buffer(-1.0)
         if casa is not None:
             libre = libre.difference(casa.buffer(1.5))
+        alb = dib.extra.get("albercas", {}).get(l["id"])
+        if alb is not None:
+            libre = libre.difference(alb.buffer(1.5))
         libre = max(_poligonos(libre), key=lambda g: g.area, default=poly)
         try:
             p = polylabel(libre, tolerance=0.5)
@@ -695,13 +804,13 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
                           (ctr.x - ux * dd + uy * dd * 0.6, ctr.y - uy * dd - ux * dd * 0.6)]
             adentro = unary_union([l["poly"] for l in lot.lotes] + list(lot.calles)).buffer(-2)
             candidatos = [q for q in candidatos if adentro.contains(Point(q))] or candidatos
-            ocupado = []
+            evitar = []
             for v in sorted(lot.verdes, key=lambda v: -v["area"])[:1]:
                 try:
-                    ocupado.append(polylabel(v["poly"], tolerance=0.5))
+                    evitar.append(polylabel(v["poly"], tolerance=0.5))
                 except Exception:  # noqa: BLE001
-                    ocupado.append(v["poly"].representative_point())
-            dest = max(candidatos, key=lambda q: min((Point(q).distance(o) for o in ocupado), default=0))
+                    evitar.append(v["poly"].representative_point())
+            dest = max(candidatos, key=lambda q: min((Point(q).distance(o) for o in evitar), default=0))
             a, b = dib.a_px(ctr.x, ctr.y), dib.a_px(*dest)
             d.line([a, b], fill=(40, 40, 40, 200), width=2)
             _texto(d, b, f"REDONDEL DE RETORNO\nØ {st['retorno_diametro_m']:.0f} m", max(12, min(24, m * 2.0)), True,
@@ -734,8 +843,9 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
             if q.get("profundidad_m"):
                 franja = f" · franja {1.5 * float(q['profundidad_m']):.0f} m"
                 break
-        _texto(d, (x, y), f"ZONA PROTEGIDA DE QUEBRADA{franja}", max(11, min(26, m * 2.2)), True, color=(255, 255, 255),
-               halo=(30, 70, 30), ocupado=ocupado)
+        _texto(d, (x, y), f"ZONA PROTEGIDA DE QUEBRADA{franja}", max(11, min(26, m * 2.2)), True,
+               color=(30, 90, 30) if tec else (255, 255, 255), halo=(255, 255, 255) if tec else (30, 70, 30),
+               ocupado=ocupado)
     if dib.extra.get("quebrada") is not None:
         q = dib.extra["quebrada"].interpolate(0.5, normalized=True)
         x, y = dib.a_px(q.x, q.y)
@@ -803,9 +913,13 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
         a = np.asarray(img.convert("RGB"))[m]
         return tuple(int(x) for x in np.median(a, axis=0))
 
-    items = [(color_de("lote", C["lote"]), "Lote"), (C["techo"], "Casa tipo (ilustrativa)"),
-             (color_de("calle", C["calle"]), "Calle"), (color_de("verde", C["verde"]), "Área verde recreativa"),
-             (color_de("proteccion", C["proteccion"]), "Zona protegida")]
+    if tec:
+        items = [(T["lote"], "Lote"), (T["techo"], "Casa tipo (ilustrativa)"), (T["calle"], "Calle"),
+                 (T["verde"], "Área verde recreativa"), (T["proteccion"], "Zona protegida")]
+    else:
+        items = [(color_de("lote", C["lote"]), "Lote"), (C["techo"], "Casa tipo (ilustrativa)"),
+                 (color_de("calle", C["calle"]), "Calle"), (color_de("verde", C["verde"]), "Área verde recreativa"),
+                 (color_de("proteccion", C["proteccion"]), "Zona protegida")]
     tl = max(12, int(hb * 0.16))
     while tl > 10:
         f = _fuente(tl)
@@ -816,13 +930,17 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
     x = W * 0.03
     for col, txt in items:
         d.rectangle([x, yb + hb * 0.22, x + tl * 1.6, yb + hb * 0.22 + tl * 1.1], fill=col, outline=(60, 60, 60))
-        if txt == "Lote":
+        if txt == "Lote" and not tec:
             d.rectangle([x + 3, yb + hb * 0.22 + 3, x + tl * 1.6 - 3, yb + hb * 0.22 + tl * 1.1 - 3], outline=(255, 255, 255),
                         width=2)
         d.text((x + tl * 2.0, yb + hb * 0.22 + tl * 0.55), txt, font=f, fill=(40, 40, 40), anchor="lm")
         x += tl * 2.6 + d.textlength(txt, font=f) + tl * 1.2
-    nota = ("Imagen ilustrativa del prediseño" + (" (pintada con IA sobre el trazo exacto)" if ia else "")
-            + ". Las medidas y áreas válidas están en la lámina (PDF). No válida para trámite.")
+    if tec:
+        nota = ("Plano de presentación dibujado por el motor con las medidas del prediseño; casas y árboles ilustrativos. "
+                "No válido para trámite.")
+    else:
+        nota = ("Imagen ilustrativa del prediseño" + (" (pintada con IA sobre el trazo exacto)" if ia else "")
+                + ". Las medidas y áreas válidas están en la lámina (PDF). No válida para trámite.")
     tn = max(12, int(hb * 0.13))
     while tn > 10 and d.textlength(nota, font=_fuente(tn)) > W * 0.94:
         tn -= 1
@@ -864,33 +982,89 @@ def rotular_aerea(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, pr
     return img.convert("RGB")
 
 
+def rotular_ambiente(img: Image.Image, lot: Resultado, ficha: dict, proyecto: str, partes: list | None = None) -> Image.Image:
+    """Imagen de ambiente (libre, pintada por la IA): solo el título con los números del motor y el aviso de que es
+    ilustrativa. No lleva medidas ni números de lote, porque la IA no respeta las posiciones exactas."""
+    img = img.convert("RGBA")
+    W, H = img.size
+    capa = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    dc = ImageDraw.Draw(capa)
+    alto = int(H * 0.17)
+    for i in range(alto):  # degradado oscuro abajo para que el texto se lea sobre la foto
+        a = int(200 * (i / alto) ** 1.4)
+        dc.line([(0, H - alto + i), (W, H - alto + i)], fill=(10, 14, 10, a))
+    img.alpha_composite(capa)
+    d = ImageDraw.Draw(img, "RGBA")
+    t1, t2 = _titulo(lot, ficha, partes)
+    _texto(d, (W * 0.025, H - H * 0.085), t1, H * 0.036, True, (255, 255, 255), anchor="lm", borde=0)
+    _texto(d, (W * 0.025, H - H * 0.04), f"{proyecto} · {t2}", H * 0.021, False, (235, 235, 230), anchor="lm", borde=0)
+    aviso = "IMAGEN DE AMBIENTE · ILUSTRATIVA, NO A ESCALA · las medidas exactas están en el plano y la lámina"
+    ta = H * 0.017
+    f = _fuente(int(ta), True)
+    tw = d.textlength(aviso, font=f)
+    d.rounded_rectangle([W - tw - W * 0.025 - 24, H * 0.025, W - W * 0.025, H * 0.025 + ta * 2.2], radius=ta,
+                        fill=(255, 255, 255, 215))
+    d.text((W - W * 0.025 - 12, H * 0.025 + ta * 1.1), aviso, font=f, fill=(150, 40, 30), anchor="rm")
+    return img.convert("RGB")
+
+
 # --------------------------------------------------------------------------------------------- todo junto
 def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict | None,
             proyecto: str, partes: list | None = None, pintor: Callable | None = None) -> list[dict]:
-    """Hace la planta (siempre) y la vista aérea (si hay relieve). Devuelve [{ruta, nombre, titulo, vista, ia, ...}]."""
+    """Imágenes de presentación, en el orden en que se mandan:
+    - ambiente: vista aérea pintada libre por la IA sobre el 3D del motor (ilustrativa, sin medidas). Si no hay modelo
+      o falla, va la vista 3D exacta del motor con sus letreros (vista "aerea"). Necesita relieve.
+    - planta: el trazo exacto pintado por la IA (revisado), con linderos, medidas y letreros del motor.
+    - tecnica: plano blanco y negro dibujado solo por el motor (no usa IA).
+    Devuelve [{ruta, nombre, titulo, vista, ia, ...}]."""
     ficha = ficha or {}
-    trabajos = [("planta", lambda: calco_planta(t, lot, malla, ficha), INSTRUCCION_PLANTA)]
-    if malla is not None:
-        trabajos.append(("aerea", lambda: calco_aereo(t, lot, malla), INSTRUCCION_AEREA))
     calcos = {}
-    for vista, fn, _ in trabajos:
+    for vista, fn in (("ambiente", (lambda: calco_aereo(t, lot, malla)) if malla is not None else None),
+                      ("planta", lambda: calco_planta(t, lot, malla, ficha)),
+                      ("tecnica", lambda: calco_planta(t, lot, malla, ficha, estilo="tecnico"))):
+        if fn is None:
+            continue
         try:
             calcos[vista] = fn()
         except Exception:  # noqa: BLE001
             log.exception("calco %s", vista)
+    if "ambiente" in calcos:
+        calcos["ambiente"].vista = "ambiente"
     with ThreadPoolExecutor(max_workers=2) as ex:
-        # la planta sale bien casi siempre (2 intentos); la aérea el modelo la cambia seguido: 1 intento y, si no
-        # pasa la revisión, va la vista 3D del motor
-        futuros = {v: ex.submit(pintar, calcos[v], pintor, ins, 2 if v == "planta" else 1)
-                   for v, _, ins in trabajos if v in calcos}
+        # la planta se revisa contra el trazo (2 intentos); el ambiente es libre (1 intento)
+        futuros = {}
+        if "planta" in calcos:
+            futuros["planta"] = ex.submit(pintar, calcos["planta"], pintor, INSTRUCCION_PLANTA, 2)
+        if "ambiente" in calcos:
+            futuros["ambiente"] = ex.submit(pintar, calcos["ambiente"], pintor, INSTRUCCION_AMBIENTE, 1, False)
         pintadas = {v: f.result() for v, f in futuros.items()}
     out = []
-    for vista, (img, info) in pintadas.items():
+    for vista in ("ambiente", "planta", "tecnica"):
+        if vista not in calcos:
+            continue
         dib = calcos[vista]
-        fn = rotular_planta if vista == "planta" else rotular_aerea
-        final = fn(img, dib, lot, ficha, proyecto, partes, ia=info["ia"])
+        try:
+            if vista == "ambiente":
+                img, info = pintadas[vista]
+                if info["ia"]:
+                    final = rotular_ambiente(img, lot, ficha, proyecto, partes)
+                    titulo = "Imagen de ambiente (ilustrativa, no a escala)"
+                else:  # sin IA: la vista 3D exacta del motor con sus letreros
+                    vista = "aerea"
+                    final = rotular_aerea(img, dib, lot, ficha, proyecto, partes, ia=False)
+                    titulo = "Vista aérea de presentación (ilustrativa)"
+            elif vista == "planta":
+                img, info = pintadas[vista]
+                final = rotular_planta(img, dib, lot, ficha, proyecto, partes, ia=info["ia"])
+                titulo = "Plano de presentación con medidas (ilustrativo)"
+            else:
+                info = {"ia": False}
+                final = rotular_planta(dib.imagen, dib, lot, ficha, proyecto, partes, estilo="tecnico")
+                titulo = "Plano técnico de presentación"
+        except Exception:  # noqa: BLE001
+            log.exception("presentación %s", vista)
+            continue
         ruta = os.path.join(carpeta, f"{base}-presentacion-{vista}.jpg")
         final.save(ruta, "JPEG", quality=90)
-        titulo = ("Plano de presentación (ilustrativo)" if vista == "planta" else "Vista aérea de presentación (ilustrativa)")
         out.append({"ruta": ruta, "nombre": os.path.basename(ruta), "titulo": titulo, "vista": vista, **info})
     return out

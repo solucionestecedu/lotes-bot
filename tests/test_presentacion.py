@@ -6,7 +6,7 @@ import math
 import numpy as np
 import pytest
 from PIL import Image, ImageFilter
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
 from pypdf import PdfReader
 
 from agente import Agente, Sesion
@@ -77,7 +77,9 @@ def test_generar_con_y_sin_pintor(tmp_path, quintas):
         return _png(_repintar(Image.open(io.BytesIO(png)).convert("RGB")))
 
     out = presentacion.generar(str(tmp_path), "q", t, lot, None, s.ficha, "Quintas", None, pintor_bueno)
-    assert [o["vista"] for o in out] == ["planta"] and out[0]["ia"] and llamadas
+    # sin relieve no hay vista aérea: la planta (pintada) y el plano técnico (sin IA)
+    assert [o["vista"] for o in out] == ["planta", "tecnica"] and out[0]["ia"] and llamadas
+    assert out[1]["ia"] is False and len(llamadas) == 1
     assert Image.open(out[0]["ruta"]).size == presentacion.calco_planta(t, lot, None, s.ficha).imagen.size
 
     def pintor_que_inventa(png, instruccion, aspecto):
@@ -103,8 +105,55 @@ def test_aerea_con_relieve(tmp_path, caso_chiltiupan):
     lot = lotificar_calle_central(t.puntos, Parametros.de_dict(dict(frente=20, fondo=35, area_minima=600, lado_acceso="norte")),
                                   m, [], lotes_por_lado=(4, 6))
     out = presentacion.generar(str(tmp_path), "ch", t, lot, m, {"acceso_lado": "norte"}, "Chiltiupán", None, None)
-    assert [o["vista"] for o in out] == ["planta", "aerea"]
-    assert Image.open(out[1]["ruta"]).size == (presentacion.LADO_LARGO, round(presentacion.LADO_LARGO * 9 / 16))
+    # sin modelo de imagen: la vista 3D exacta del motor en lugar del ambiente, la planta y el técnico
+    assert [o["vista"] for o in out] == ["aerea", "planta", "tecnica"]
+    assert Image.open(out[0]["ruta"]).size == (presentacion.LADO_LARGO, round(presentacion.LADO_LARGO * 9 / 16))
+
+
+def test_ambiente_es_libre_y_no_lleva_medidas(tmp_path, caso_chiltiupan):
+    from motor.lotificacion import Parametros
+    from motor.calle_central import lotificar_calle_central
+
+    t, m, _ = caso_chiltiupan
+    lot = lotificar_calle_central(t.puntos, Parametros.de_dict(dict(frente=20, fondo=35, area_minima=600, lado_acceso="norte")),
+                                  m, [], lotes_por_lado=(4, 6))
+    vistos = []
+
+    def pintor(png, instruccion, aspecto):
+        vistos.append(instruccion)
+        if instruccion == presentacion.INSTRUCCION_AMBIENTE:  # la IA cambia todo: igual se acepta (es ilustrativa)
+            return _png(Image.new("RGB", (1600, 900), (90, 140, 80)))
+        return _png(_repintar(Image.open(io.BytesIO(png)).convert("RGB")))
+
+    out = presentacion.generar(str(tmp_path), "ch", t, lot, m, {"acceso_lado": "norte"}, "Chiltiupán", None, pintor)
+    assert [o["vista"] for o in out] == ["ambiente", "planta", "tecnica"]
+    assert out[0]["ia"]
+    assert presentacion.INSTRUCCION_AMBIENTE in vistos
+    # el ambiente solo lleva título y aviso abajo/arriba: el centro de la imagen queda como lo pintó la IA
+    img = np.asarray(Image.open(out[0]["ruta"]).convert("RGB")).astype(int)
+    h, w, _ = img.shape
+    centro = img[h // 3: 2 * h // 3, w // 3: 2 * w // 3]
+    assert np.abs(centro - np.array([90, 140, 80])).max() < 12
+
+
+def test_plano_tecnico_es_blanco_y_negro_con_medidas(quintas):
+    _, s, lot = quintas
+    dib = presentacion.calco_planta(s.get_terreno(), lot, None, s.ficha, estilo="tecnico")
+    assert dib.vista == "tecnica"
+    final = np.asarray(presentacion.rotular_planta(dib.imagen, dib, lot, s.ficha, "Prueba", estilo="tecnico"))
+    # el lote es blanco (casi todo: hay casa, alberca y árboles) y su lindero negro
+    l1 = lot.lotes[0]["poly"]
+    x0, y0, x1, y1 = l1.bounds
+    muestras = [final[round(dib.a_px(x, y)[1]), round(dib.a_px(x, y)[0])].min()
+                for x in np.linspace(x0, x1, 25) for y in np.linspace(y0, y1, 25) if l1.buffer(-2).contains(Point(x, y))]
+    assert np.median(muestras) > 245
+    comun = l1.intersection(lot.lotes[1]["poly"])
+    negros = 0
+    for fr in (0.2, 0.25, 0.3, 0.75, 0.8):
+        q = comun.interpolate(fr, normalized=True)
+        x, y = dib.a_px(q.x, q.y)
+        negros += int(final[round(y), round(x)].max() < 90)
+    assert negros >= 3
 
 
 def test_entregables_traen_presentacion_y_hoja_en_pdf(tmp_path):

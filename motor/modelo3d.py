@@ -92,9 +92,10 @@ def huella_casa(lote: dict, calles, angulo: float) -> list[tuple[float, float]] 
         dx, dy = p_calle.x - c.x, p_calle.y - c.y
         if dx * vx + dy * vy > 0:
             vx, vy = -vx, -vy                         # v apunta del frente al fondo
-    ancho = min(7.0, lote["frente"] * 0.7)
     fondo_lote = lote["area"] / max(lote["frente"], 1)
-    prof = min(9.0, fondo_lote * 0.45)
+    # casa de 7 × 9 m en lotes chicos; en quintas crece con el lote (hasta 14 × 12 m)
+    ancho = min(max(7.0, lote["frente"] * 0.5), 14.0, lote["frente"] * 0.7)
+    prof = min(max(9.0, fondo_lote * 0.3), 12.0, fondo_lote * 0.45)
     corrimiento = max(0.0, fondo_lote / 2 - 3.0 - prof / 2)
     centros = [(c.x - vx * corrimiento, c.y - vy * corrimiento)]
     # lotes irregulares (cuñas, lotes con cola): probar pegado a la calle y en el punto más holgado del lote
