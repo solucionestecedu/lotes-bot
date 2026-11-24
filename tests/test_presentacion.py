@@ -124,3 +124,20 @@ def test_entregables_traen_presentacion_y_hoja_en_pdf(tmp_path):
     assert len(paginas) == 3 and "PLANO DE PRESENTACIÓN" in paginas[2].extract_text().upper()
     if res:
         assert res["presentacion"][0]["vista"] == "planta" and res["presentacion"][0]["pintada_con_ia"] is False
+
+
+def test_rechaza_calle_inventada_sobre_el_area_verde(quintas):
+    _, s, lot = quintas
+    d = presentacion.calco_planta(s.get_terreno(), lot, None, s.ficha)
+    bien = _repintar(d.imagen)
+    a = np.asarray(bien).copy()
+    zona_verde = np.isin(d.extra["mascara"], [presentacion.modelo3d.ID_CLASE["verde"], presentacion.modelo3d.ID_CLASE["proteccion"]])
+    ys, xs = np.nonzero(zona_verde)
+    franja = zona_verde & (np.arange(a.shape[0])[:, None] > np.percentile(ys, 40))  # media zona verde hecha "calle"
+    a[franja] = [128, 128, 126]
+    mala = Image.fromarray(a)
+    assert presentacion.clases_ok(presentacion.medir_clases(bien, d.extra["mascara"]))[0]
+    ok, motivo = presentacion.clases_ok(presentacion.medir_clases(mala, d.extra["mascara"]))
+    assert not ok and "área verde" in motivo
+    img, info = presentacion.pintar(d, lambda png, i, a_: _png(mala), presentacion.INSTRUCCION_PLANTA)
+    assert not info["ia"] and "calco" in info["motivo"]

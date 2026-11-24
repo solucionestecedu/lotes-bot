@@ -23,7 +23,9 @@ PIN = (13.72121, -89.24686)
 
 
 def main():
-    modelos = sys.argv[1:] or ["gemini-nano-banana-2.1"]
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    reusar = "--reusar" in sys.argv  # no llama a la API: vuelve a revisar lo que el modelo ya devolvió
+    modelos = args or ["gemini-nano-banana-2.1"]
     ag = Agente(GuionQuintas(), "/tmp/presentacion/_agente")
     s = Sesion("prueba")
     ag.atender(s, "plano", [{"mime": "image/jpeg", "nombre": "p.jpg", "datos": b"x"}])
@@ -41,13 +43,21 @@ def main():
         carpeta = f"/tmp/presentacion/{modelo}"
         os.makedirs(carpeta, exist_ok=True)
         os.environ["PRESENTACION_CRUDO"] = carpeta
-        llm = GeminiLLM(os.environ["GEMINI_API_KEY"], "gemini-3.8-flash", "gemini-3.8-flash", modelo_imagen=modelo)
+        if reusar:
+            def pintor(png, instruccion, aspecto, carpeta=carpeta):
+                vista = "aerea" if aspecto == "16:9" else "planta"
+                with open(os.path.join(carpeta, f"{vista}-modelo.png"), "rb") as f:
+                    return f.read()
+            os.environ.pop("PRESENTACION_CRUDO", None)
+        else:
+            pintor = GeminiLLM(os.environ["GEMINI_API_KEY"], "gemini-3.8-flash", "gemini-3.8-flash", modelo_imagen=modelo).pintar
         t0 = time.time()
-        out = presentacion.generar(carpeta, "quintas", t, lot, m, s.ficha, "Quintas A y B", partes, llm.pintar)
+        out = presentacion.generar(carpeta, "quintas", t, lot, m, s.ficha, "Quintas A y B", partes, pintor)
         print(f"\n=== {modelo} ({time.time() - t0:.0f} s) ===")
         for o in out:
             print(f"  {o['vista']}: pintada con IA = {o['ia']} · coincidencia {o.get('coincidencia')} "
                   f"(corrida {o.get('coincidencia_corrida')}) {o.get('motivo', '')}")
+            print(f"     clases: {o.get('clases')}")
     print("\nArchivos en /tmp/presentacion/")
 
 

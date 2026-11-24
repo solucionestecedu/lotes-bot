@@ -33,6 +33,7 @@ CLASES = {
     "techo": ("3D_CASAS_TECHOS", 14, (170, 72, 52)),
     "base": ("3D_BASE", 33, (176, 140, 104)),
 }
+ID_CLASE = {c: i for i, c in enumerate(CLASES, start=1)}  # para máscaras de clases (0 = cielo)
 ALTO_MUROS = 2.8
 ALTO_TECHO = 1.6
 
@@ -226,7 +227,7 @@ def dxf(ruta: str, escena: Escena) -> str:
 
 # ---------------------------------------------------------------------------- vista aérea
 def render_aereo(escena: Escena, t: Terreno, ancho: int = 1600, alto: int = 1000, elevacion: float = 38.0,
-                 malla: Malla | None = None, lineas: bool = True):
+                 malla: Malla | None = None, lineas: bool = True, mascara: bool = False):
     """Vista aérea en perspectiva (algoritmo del pintor), sin textos. Devuelve (imagen PIL, pantalla) donde
     pantalla(x, y, z) da la posición en píxeles de un punto del terreno."""
     from PIL import Image, ImageDraw
@@ -288,6 +289,9 @@ def render_aereo(escena: Escena, t: Terreno, ancho: int = 1600, alto: int = 1000
     luz = 0.42 + 0.58 * difusa
     base = np.array([CLASES[cl][2] for cl, _ in tris], dtype=float)
     colores = np.clip(base * luz[:, None], 0, 255).astype(int)
+    if mascara:  # cada triángulo con el número de su clase, sin luz ni líneas ni cielo
+        colores = np.array([[ID_CLASE[cl], 0, 0] for cl, _ in tris], dtype=int)
+        lineas = False
     prof = zcam.mean(axis=1)
 
     # líneas (bordes de lotes y lindero) como elementos con su propia profundidad
@@ -300,9 +304,11 @@ def render_aereo(escena: Escena, t: Terreno, ancho: int = 1600, alto: int = 1000
             for k in range(len(pl) - 1):
                 segs.append(((qz[k] + qz[k + 1]) / 2 - 0.5, (px[k], py[k], px[k + 1], py[k + 1]), color, grosor))
 
+    if mascara:
+        segs = []
     img = Image.new("RGB", (W, H))
     dib = ImageDraw.Draw(img)
-    for yy in range(0, H, 4):  # cielo
+    for yy in (range(0, H, 4) if not mascara else ()):  # cielo
         a = yy / H
         dib.rectangle([0, yy, W, yy + 4], fill=(int(178 + 50 * a), int(206 + 30 * a), int(232 + 15 * a)))
     orden = sorted([(prof[k], 0, k) for k in range(len(tris))] + [(s[0], 1, k) for k, s in enumerate(segs)], reverse=True)
@@ -313,7 +319,7 @@ def render_aereo(escena: Escena, t: Terreno, ancho: int = 1600, alto: int = 1000
         else:
             _, (x1, y1, x2, y2), col, g = segs[k]
             dib.line([(x1, y1), (x2, y2)], fill=col, width=g)
-    img = img.resize((ancho, alto), Image.LANCZOS)
+    img = img.resize((ancho, alto), Image.NEAREST if mascara else Image.LANCZOS)
 
     def pantalla(x, y, z):
         q = np.array([x, y, z]) - cam

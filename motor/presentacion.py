@@ -35,6 +35,10 @@ ASPECTOS = {"1:1": 1.0, "4:3": 4 / 3, "3:4": 3 / 4, "3:2": 1.5, "2:3": 2 / 3, "1
 LADO_LARGO = 2048
 BANDA_SUP, BANDA_INF = 0.11, 0.12      # fracción del alto para título y simbología
 UMBRAL_COINCIDENCIA = 0.25             # correlación mínima de bordes entre el calco y la imagen pintada
+UMBRAL_GRIS_EN_VERDE = 0.10            # máx. parte del área verde/protegida que puede verse como asfalto
+UMBRAL_GRIS_EN_LOTES = 0.22            # en lotes hay caminos de entrada: un poco más de tolerancia
+MIN_GRIS_EN_CALLE = 0.35               # la calle debe seguir viéndose gris
+MIN_VERDE_EN_VERDE = 0.40              # el área verde y la protegida deben seguir viéndose verdes
 
 C = {
     "papel": (246, 243, 235), "entorno": (222, 228, 208), "curva": (176, 150, 112), "terreno": (232, 222, 196),
@@ -142,15 +146,6 @@ def calco_planta(t: Terreno, lot: Resultado, malla: Malla | None = None, ficha: 
                     linea(ln, C["curva"] + ((150,) if c["indice"] else (90,)), 0.25 if c["indice"] else 0.12, 1)
         except Exception:  # noqa: BLE001
             log.exception("curvas para la presentación")
-    # vegetación de los alrededores: unos cuantos grupos de árboles, discretos
-    afuera = dibujo_geo.difference(prop.buffer(12))
-    for p in _puntos_dentro(afuera, max(3, int(afuera.area / 2500)), rng, 25):
-        for _ in range(rng.randint(2, 5)):
-            q = (p[0] + rng.uniform(-6, 6), p[1] + rng.uniform(-6, 6))
-            if afuera.contains(Point(q)):
-                rr = rng.uniform(1.6, 2.6) * m2px
-                qq = px(*q)
-                d.ellipse([qq[0] - rr, qq[1] - rr, qq[0] + rr, qq[1] + rr], fill=C["monte"] + (120,))
 
     # calle pública de acceso y quebrada (fuera del terreno, ilustrativas)
     extra: dict = {}
@@ -293,6 +288,29 @@ def calco_planta(t: Terreno, lot: Resultado, malla: Malla | None = None, ficha: 
 
     img = img.resize((W, H), Image.LANCZOS)
     a_px = lambda x, y: px(x, y, 1)  # noqa: E731
+    # máscara de clases a tamaño final (mismos números que modelo3d.ID_CLASE)
+    ids = modelo3d.ID_CLASE
+    msk = Image.new("L", (W, H), 0)
+    dm = ImageDraw.Draw(msk)
+
+    def pinta(g, n):
+        for ext, hoyos in _anillos(g):
+            dm.polygon([a_px(*q) for q in ext], fill=n)
+            for hoyo in hoyos:
+                dm.polygon([a_px(*q) for q in hoyo], fill=0)
+
+    pinta(prop, ids["terreno"])
+    for p in lot.protecciones:
+        pinta(p, ids["proteccion"])
+    for v in lot.verdes:
+        pinta(v["poly"], ids["verde"])
+    for l in lot.lotes:
+        pinta(l["poly"].buffer(-0.6), ids["lote"])
+    for c_ in lot.calles:
+        pinta(c_.buffer(-0.6), ids["calle"])
+    for _, casa in casas:
+        pinta(casa.buffer(1.2), ids["techo"])
+    extra["mascara"] = np.asarray(msk)
     linderos = [[a_px(*p) for p in l["poly"].exterior.coords] for l in lot.lotes]
     linderos.append([a_px(*p) for p in prop.exterior.coords])
     extra["casas"] = {l["id"]: casa for l, casa in casas}
@@ -323,7 +341,9 @@ def calco_aereo(t: Terreno, lot: Resultado, malla: Malla, lado_largo: int = LADO
     for l in lot.lotes:
         pts = list(LineString(l["poly"].exterior.coords).segmentize(2.0).coords)
         linderos.append([a_px(*p) for p in pts])
-    return Dibujo("aerea", img, "16:9", a_px, linderos, None, (0, 0, W, H), {"pantalla": pantalla, "alt": alt})
+    msk, _ = modelo3d.render_aereo(escena, t, W, H, 40.0, malla, mascara=True)
+    return Dibujo("aerea", img, "16:9", a_px, linderos, None, (0, 0, W, H),
+                  {"pantalla": pantalla, "alt": alt, "mascara": np.asarray(msk)[:, :, 0]})
 
 
 # --------------------------------------------------------------------------------------------- pintar
@@ -392,6 +412,41 @@ def alinear(base: Image.Image, pintada: Image.Image, zona, L: int = 512) -> tupl
     return ok, info, pintada.resize(base.size)
 
 
+def _hsv(img: Image.Image):
+    a = np.asarray(img.convert("HSV"), dtype=np.float32)
+    return a[..., 0] * 360 / 255, a[..., 1] / 255, a[..., 2] / 255
+
+
+def medir_clases(img: Image.Image, mascara: np.ndarray) -> dict:
+    """Qué tanto de cada zona parece asfalto (gris) o vegetación (verde) en la imagen."""
+    h, s, v = _hsv(img.resize((mascara.shape[1], mascara.shape[0])))
+    gris = (s < 0.16) & (v > 0.25) & (v < 0.88)
+    verde = (h >= 45) & (h <= 175) & (s > 0.15) & (v > 0.08)
+    ids = modelo3d.ID_CLASE
+    out = {}
+    for nombre, cl in (("calle", [ids["calle"]]), ("verde", [ids["verde"], ids["proteccion"]]), ("lotes", [ids["lote"]])):
+        m = np.isin(mascara, cl)
+        if m.sum() < 50:
+            continue
+        out[nombre] = {"gris": round(float(gris[m].mean()), 3), "verde": round(float(verde[m].mean()), 3)}
+    return out
+
+
+def clases_ok(medidas: dict) -> tuple[bool, str]:
+    """Reglas para rechazar una imagen que inventó cosas: calle encima del área verde o de los lotes, la calle
+    convertida en otra cosa, o la zona protegida sin vegetación."""
+    v, c, l_ = medidas.get("verde"), medidas.get("calle"), medidas.get("lotes")
+    if v and v["gris"] > UMBRAL_GRIS_EN_VERDE:
+        return False, "pintó calle o piso donde va área verde o protegida"
+    if l_ and l_["gris"] > UMBRAL_GRIS_EN_LOTES:
+        return False, "pintó calle o piso encima de los lotes"
+    if c and c["gris"] < MIN_GRIS_EN_CALLE:
+        return False, "la calle dejó de verse como calle"
+    if v and v["verde"] < MIN_VERDE_EN_VERDE:
+        return False, "el área verde o protegida dejó de verse verde"
+    return True, ""
+
+
 def pintar(dibujo: Dibujo, pintor: Callable | None, instruccion: str) -> tuple[Image.Image, dict]:
     """Devuelve (imagen, info). Si no hay pintor, falla o mueve el dibujo, regresa el calco."""
     info = {"ia": False}
@@ -424,6 +479,12 @@ def pintar(dibujo: Dibujo, pintor: Callable | None, instruccion: str) -> tuple[I
     if not ok:
         info["motivo"] = "el modelo movió o cambió el dibujo; se usó el calco exacto"
         return dibujo.imagen, info
+    if dibujo.extra.get("mascara") is not None:
+        info["clases"] = medir_clases(pintada, dibujo.extra["mascara"])
+        ok, por_que = clases_ok(info["clases"])
+        if not ok:
+            info["motivo"] = f"el modelo {por_que}; se usó el calco exacto"
+            return dibujo.imagen, info
     info["ia"] = True
     return pintada, info
 
@@ -594,8 +655,21 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
     # simbología y aviso
     yb = dib.zona[3]
     hb = H - yb
-    items = [(C["lote"], "Lote"), (C["techo"], "Casa tipo (ilustrativa)"), (C["calle"], "Calle"),
-             (C["verde"], "Área verde recreativa"), (C["proteccion"], "Zona protegida")]
+    ids = modelo3d.ID_CLASE
+    msk = dib.extra.get("mascara")
+
+    def color_de(cl, defecto):
+        if not ia or msk is None:
+            return defecto
+        m = msk == ids[cl]
+        if m.sum() < 30:
+            return defecto
+        a = np.asarray(img.convert("RGB"))[m]
+        return tuple(int(x) for x in np.median(a, axis=0))
+
+    items = [(color_de("lote", C["lote"]), "Lote"), (C["techo"], "Casa tipo (ilustrativa)"),
+             (color_de("calle", C["calle"]), "Calle"), (color_de("verde", C["verde"]), "Área verde recreativa"),
+             (color_de("proteccion", C["proteccion"]), "Zona protegida")]
     tl = max(12, int(hb * 0.16))
     while tl > 10:
         f = _fuente(tl)
@@ -610,7 +684,10 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
         x += tl * 2.6 + d.textlength(txt, font=f) + tl * 1.2
     nota = ("Imagen ilustrativa del prediseño" + (" (pintada con IA sobre el trazo exacto)" if ia else "")
             + ". Las medidas y áreas válidas están en la lámina (PDF). No válida para trámite.")
-    d.text((W * 0.03, yb + hb * 0.68), nota, font=_fuente(max(12, int(hb * 0.13))), fill=(160, 40, 30), anchor="lm")
+    tn = max(12, int(hb * 0.13))
+    while tn > 10 and d.textlength(nota, font=_fuente(tn)) > W * 0.94:
+        tn -= 1
+    d.text((W * 0.03, yb + hb * 0.68), nota, font=_fuente(tn), fill=(160, 40, 30), anchor="lm")
     return img.convert("RGB")
 
 
