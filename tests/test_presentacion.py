@@ -1,10 +1,12 @@
 """Imagen de presentación: el motor traza, el modelo de imagen solo pinta, los letreros los pone el motor."""
 import io
 import json
+import math
 
 import numpy as np
 import pytest
 from PIL import Image, ImageFilter
+from shapely.geometry import Polygon
 from pypdf import PdfReader
 
 from agente import Agente, Sesion
@@ -160,3 +162,35 @@ def test_porton_en_la_entrada_y_no_en_el_retorno():
     boca, porton = Point(d.extra["boca"]), Point(d.extra["porton"])
     assert boca.distance(ent) < boca.distance(ret)
     assert porton.distance(ent) < porton.distance(ret)
+
+
+def test_tramos_de_lindero_y_medidas_sin_repetir():
+    from shapely.geometry import Point, box as caja
+
+    # rectángulo con puntos de más (alineados y casi pegados): 4 tramos con sus medidas
+    r = Polygon([(0, 0), (10, 0), (10.1, 0.0), (20, 0), (20, 30), (20, 30.05), (0, 30)])
+    assert sorted(round(t.length, 2) for t in presentacion._tramos(r)) == [20.0, 20.0, 30.0, 30.0]
+    # lote junto al redondel: el frente curvo es un solo tramo, no un pedazo por cada segmento del arco
+    lote = caja(0, 0, 30, 30).difference(Point(0, 0).buffer(12))
+    tramos = presentacion._tramos(lote)
+    assert sorted(round(t.length, 1) for t in tramos) == [18.0, 18.0, 18.8, 30.0, 30.0]
+    arco = max(tramos, key=lambda t: len(t.coords))
+    assert arco.length == pytest.approx(math.pi * 12 / 2, rel=0.01)
+
+
+def test_planta_lleva_linderos_blancos_y_medidas(quintas):
+    _, s, lot = quintas
+    dib = presentacion.calco_planta(s.get_terreno(), lot, None, s.ficha)
+    verde = Image.new("RGB", dib.imagen.size, (100, 140, 60))  # como si la IA pintara todo de césped
+    final = presentacion.rotular_planta(verde, dib, lot, s.ficha, "Prueba", ia=True)
+    a = np.asarray(final)
+    # un punto a media altura de un lindero entre dos lotes vecinos queda blanco (encima de la pintura)
+    l1, l2 = lot.lotes[0]["poly"], lot.lotes[1]["poly"]
+    comun = l1.intersection(l2)
+    assert comun.length > 5
+    blancos = 0
+    for fr in (0.2, 0.25, 0.3, 0.75, 0.8):
+        q = comun.interpolate(fr, normalized=True)
+        x, y = dib.a_px(q.x, q.y)
+        blancos += int(a[round(y), round(x)].min() > 200)
+    assert blancos >= 3

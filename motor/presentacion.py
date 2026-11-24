@@ -5,8 +5,9 @@
    árboles), sin ningún texto.
 2. Un modelo de imagen (Nano Banana) solo lo pinta, con la instrucción de no mover nada ni escribir nada.
 3. Se compara la imagen pintada con el calco: si movió linderos o se comió lotes, se descarta.
-4. Los letreros y medidas (número y área de cada lote, calle, retorno, área verde, quebrada, norte, escala) se
-   ponen aquí encima, con los números del motor. Si no hay modelo o falla, se entrega el calco con sus letreros.
+4. Los linderos de los lotes, sus medidas y los letreros (número y área de cada lote, calle, retorno, área verde,
+   quebrada, norte, escala) se ponen aquí encima, con la geometría y los números del motor. Si no hay modelo o
+   falla, se entrega el calco con sus letreros.
 """
 from __future__ import annotations
 
@@ -512,14 +513,26 @@ def _pintar_una(dibujo: Dibujo, pintor: Callable | None, instruccion: str) -> tu
 
 
 # --------------------------------------------------------------------------------------------- letreros
-def _texto(d, xy, txt, tam, negrita=False, color=(30, 30, 30), halo=(255, 255, 255), anchor="mm", borde=None):
+def _texto(d, xy, txt, tam, negrita=False, color=(30, 30, 30), halo=(255, 255, 255), anchor="mm", borde=None,
+           ocupado: list | None = None):
     f = _fuente(tam, negrita)
-    d.text(xy, txt, font=f, fill=color, anchor=anchor, stroke_width=borde if borde is not None else max(2, int(tam / 7)),
-           stroke_fill=halo, align="center")
+    sw = borde if borde is not None else max(2, int(tam / 7))
+    d.text(xy, txt, font=f, fill=color, anchor=anchor, stroke_width=sw, stroke_fill=halo, align="center")
+    if ocupado is not None:
+        ocupado.append(box(*d.textbbox(xy, txt, font=f, anchor=anchor, stroke_width=sw, align="center")))
     return f
 
 
-def _texto_girado(img, xy, txt, tam, angulo_grados, negrita=True, color=(30, 30, 30)):
+def _caja_girada(xy, w, h, angulo_grados) -> Polygon:
+    """Rectángulo w×h centrado en xy y girado (ángulo a la izquierda, como se ve en pantalla), en píxeles."""
+    a = math.radians(angulo_grados)
+    ux, uy = math.cos(a), -math.sin(a)
+    vx, vy = math.sin(a), math.cos(a)
+    return Polygon([(xy[0] + sx * ux * w / 2 + sy * vx * h / 2, xy[1] + sx * uy * w / 2 + sy * vy * h / 2)
+                    for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))])
+
+
+def _texto_girado(img, xy, txt, tam, angulo_grados, negrita=True, color=(30, 30, 30), ocupado: list | None = None):
     f = _fuente(tam, negrita)
     caja = f.getbbox(txt, stroke_width=3)
     w, h = caja[2] - caja[0] + 12, caja[3] - caja[1] + 12
@@ -527,8 +540,56 @@ def _texto_girado(img, xy, txt, tam, angulo_grados, negrita=True, color=(30, 30,
     ImageDraw.Draw(capa).text((w / 2, h / 2), txt, font=f, fill=color + (255,), anchor="mm", stroke_width=3,
                               stroke_fill=(255, 255, 255, 235))
     a = ((angulo_grados + 90) % 180) - 90  # que no quede de cabeza
+    if ocupado is not None:
+        ocupado.append(_caja_girada(xy, w, h, a))
     capa = capa.rotate(a, expand=True, resample=Image.BICUBIC)
     img.alpha_composite(capa, (int(xy[0] - capa.width / 2), int(xy[1] - capa.height / 2)))
+
+
+def _tramos(poly, esquina: float = 12.0, junta: float = 0.3) -> list[LineString]:
+    """Tramos del contorno de un lote, de esquina a esquina (rectos, o curvos junto al redondel), en metros.
+    Une los puntos casi pegados que dejan los recortes y no corta donde el contorno solo dobla poco."""
+    pts: list = []
+    for q in list(poly.exterior.coords)[:-1]:
+        if not pts or math.dist(q, pts[-1]) > junta:
+            pts.append((q[0], q[1]))
+    while len(pts) > 2 and math.dist(pts[0], pts[-1]) <= junta:
+        pts.pop()
+    n = len(pts)
+    if n < 3:
+        return []
+
+    def giro(i):
+        a, b, c = pts[i - 1], pts[i], pts[(i + 1) % n]
+        g = math.degrees(math.atan2(c[1] - b[1], c[0] - b[0]) - math.atan2(b[1] - a[1], b[0] - a[0]))
+        return abs((g + 180) % 360 - 180)
+
+    esq = [i for i in range(n) if giro(i) >= esquina]
+    out = []
+    for k, i in enumerate(esq):
+        j = esq[(k + 1) % len(esq)]
+        idx = list(range(i, j + 1)) if j > i else list(range(i, n)) + list(range(0, j + 1))
+        out.append(LineString([pts[t % n] for t in idx]))
+    return out
+
+
+def _cota(img, xy, txt, tam, angulo_grados):
+    """Medida de un lindero: texto en una pastilla blanca, encima de la línea y a lo largo de ella."""
+    f = _fuente(tam, True)
+    c = f.getbbox(txt)
+    w, h = c[2] - c[0] + tam * 0.9, tam * 1.45
+    capa = Image.new("RGBA", (int(w) + 4, int(h) + 4), (0, 0, 0, 0))
+    dc = ImageDraw.Draw(capa)
+    dc.rounded_rectangle([2, 2, w + 1, h + 1], radius=h / 2, fill=(255, 255, 255, 232), outline=(110, 90, 60, 220), width=1)
+    dc.text(((w + 4) / 2, (h + 4) / 2), txt, font=f, fill=(45, 35, 25, 255), anchor="mm")
+    capa = capa.rotate(angulo_grados, expand=True, resample=Image.BICUBIC)
+    img.alpha_composite(capa, (int(xy[0] - capa.width / 2), int(xy[1] - capa.height / 2)))
+
+
+def _medida_cota(txt, tam):
+    f = _fuente(tam, True)
+    c = f.getbbox(txt)
+    return c[2] - c[0] + tam * 0.9 + 4, tam * 1.45 + 4
 
 
 def _fmt(v, dec=0):
@@ -563,8 +624,25 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
     _texto(d, (W * 0.03, bt * 0.36), t1, bt * 0.27, True, anchor="lm", borde=0)
     _texto(d, (W * 0.03, bt * 0.74), f"{proyecto} · {t2}", bt * 0.17, False, (70, 70, 70), anchor="lm", borde=0)
 
-    # lotes: número y área
-    tam = max(14, min(40, m * 4.2))
+    ocupado: list = []  # lo que ya tiene letrero (en píxeles): las medidas de los linderos no se le enciman
+
+    # linderos de los lotes (encima de la pintura, exactos): línea blanca con sombra; el del terreno, oscuro
+    capa = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    dl = ImageDraw.Draw(capa)
+    ancho = max(2, round(m * 0.4))
+    contornos = [[dib.a_px(*q) for q in ext] for l in lot.lotes for ext, _ in _anillos(l["poly"])]
+    for pts in contornos:
+        dl.line(pts + [pts[0]], fill=(30, 24, 16, 120), width=ancho + 3, joint="curve")
+    for pts in contornos:
+        dl.line(pts + [pts[0]], fill=(255, 255, 255, 235), width=ancho, joint="curve")
+    if dib.linderos_px:
+        per = list(dib.linderos_px[-1])
+        dl.line(per + [per[0]], fill=(70, 50, 34, 255), width=ancho + 2, joint="curve")
+    img.alpha_composite(capa)
+
+    # lotes: número y área en una etiqueta
+    tam = max(13, min(30, m * 3.0))
+    f1, f2 = _fuente(tam, True), _fuente(tam * 0.82, True)
     for l in lot.lotes:
         poly = l["poly"]
         casa = dib.extra.get("casas", {}).get(l["id"])
@@ -577,11 +655,14 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
         except Exception:  # noqa: BLE001
             p = libre.representative_point()
         x, y = dib.a_px(p.x, p.y)
-        r = tam * 0.8
-        cyc = y - r * 0.9
-        d.ellipse([x - r, cyc - r, x + r, cyc + r], fill=(255, 255, 255, 240), outline=(80, 60, 40), width=2)
-        _texto(d, (x, cyc), str(l["id"]), tam * 0.95, True, borde=0)
-        _texto(d, (x, y + tam * 0.6), f"{_fmt(l['area'])} m²", tam * 0.72, True)
+        t1_, t2_ = f"LOTE {l['id']}", f"{_fmt(l['area'])} m²"
+        w = max(d.textlength(t1_, font=f1), d.textlength(t2_, font=f2)) + tam * 1.0
+        h = tam * 2.45
+        caja_l = [x - w / 2, y - h / 2, x + w / 2, y + h / 2]
+        d.rounded_rectangle(caja_l, radius=tam * 0.35, fill=(255, 255, 255, 238), outline=(70, 50, 34), width=2)
+        d.text((x, y - h * 0.2), t1_, font=f1, fill=(30, 30, 30), anchor="mm")
+        d.text((x, y + h * 0.24), t2_, font=f2, fill=(70, 55, 40), anchor="mm")
+        ocupado.append(box(*caja_l))
 
     # calle, retorno, portón
     if lot.calles:
@@ -603,7 +684,7 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
                 p = polylabel(max(_poligonos(calle), key=lambda g: g.area), tolerance=0.5)
             except Exception:  # noqa: BLE001
                 p = calle.representative_point()
-        _texto_girado(img, dib.a_px(p.x, p.y), f"{nombre_c} · {ancho_c:.2f} m", tam_c, ang)
+        _texto_girado(img, dib.a_px(p.x, p.y), f"{nombre_c} · {ancho_c:.2f} m", tam_c, ang, ocupado=ocupado)
         if st.get("retorno_diametro_m") and espina is not None:
             rr = st["retorno_diametro_m"] / 2
             ctr = Point(st["retorno_centro"]) if st.get("retorno_centro") else espina.interpolate(max(0.0, espina.length - rr))
@@ -623,11 +704,13 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
             dest = max(candidatos, key=lambda q: min((Point(q).distance(o) for o in ocupado), default=0))
             a, b = dib.a_px(ctr.x, ctr.y), dib.a_px(*dest)
             d.line([a, b], fill=(40, 40, 40, 200), width=2)
-            _texto(d, b, f"REDONDEL DE RETORNO\nØ {st['retorno_diametro_m']:.0f} m", max(12, min(24, m * 2.0)), True)
+            _texto(d, b, f"REDONDEL DE RETORNO\nØ {st['retorno_diametro_m']:.0f} m", max(12, min(24, m * 2.0)), True,
+                   ocupado=ocupado)
         if dib.extra.get("porton"):
             bx, by = dib.extra["porton"]
             x, y = dib.a_px(bx, by)
-            _texto(d, (x + m * 3.5, y), "PORTÓN Y\nVIGILANCIA", max(11, min(24, m * 2.0)), True, anchor="lm")
+            _texto(d, (x + m * 3.5, y), "PORTÓN Y\nVIGILANCIA", max(11, min(24, m * 2.0)), True, anchor="lm",
+                   ocupado=ocupado)
 
     # área verde y protección
     for v in sorted(lot.verdes, key=lambda v: -v["area"])[:1]:
@@ -638,7 +721,7 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
                 p = v["poly"].representative_point()
             x, y = dib.a_px(p.x, p.y)
             _texto(d, (x, y), f"ÁREA VERDE\nRECREATIVA\n{_fmt(st['area_verde'])} m²", max(11, min(26, m * 2.2)), True,
-                   color=(28, 80, 28))
+                   color=(28, 80, 28), ocupado=ocupado)
     if lot.protecciones:
         prot = max(lot.protecciones, key=lambda g: g.area)
         try:
@@ -652,16 +735,16 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
                 franja = f" · franja {1.5 * float(q['profundidad_m']):.0f} m"
                 break
         _texto(d, (x, y), f"ZONA PROTEGIDA DE QUEBRADA{franja}", max(11, min(26, m * 2.2)), True, color=(255, 255, 255),
-               halo=(30, 70, 30))
+               halo=(30, 70, 30), ocupado=ocupado)
     if dib.extra.get("quebrada") is not None:
         q = dib.extra["quebrada"].interpolate(0.5, normalized=True)
         x, y = dib.a_px(q.x, q.y)
-        _texto(d, (x, y), "Quebrada", max(11, min(24, m * 2.0)), False, color=(20, 70, 140))
+        _texto(d, (x, y), "Quebrada", max(11, min(24, m * 2.0)), False, color=(20, 70, 140), ocupado=ocupado)
     if dib.extra.get("acceso") is not None:
         a = dib.extra["acceso"]
         p = a.representative_point()
         x, y = dib.a_px(p.x, p.y)
-        _texto(d, (x, y), "CALLE DE ACCESO", max(11, min(24, m * 2.0)), True, color=(60, 60, 60))
+        _texto(d, (x, y), "CALLE DE ACCESO", max(11, min(24, m * 2.0)), True, color=(60, 60, 60), ocupado=ocupado)
 
     # norte y escala
     zx0, zy0, zx1, zy1 = dib.zona
@@ -679,6 +762,31 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
     for i in range(5):
         _texto(d, (x0 + i * paso * m, y0 - 14), f"{i * paso}", 16, False)
     _texto(d, (x0 + 4 * paso * m + 10, y0 + 5), "m", 16, False, anchor="lm")
+    ocupado += [box(kx - R, ky - R * 1.8, kx + R, ky + R), box(x0 - 10, y0 - 26, x0 + 4 * paso * m + 30, y0 + 14)]
+
+    # medidas de cada lindero de lote (las compartidas, una sola vez), sin encimarse a los letreros
+    tam_m = max(12, min(20, m * 1.7))
+    vistos: list = []
+    for l in lot.lotes:
+        for tr in _tramos(l["poly"]):
+            if tr.length < 3 or any(tr.hausdorff_distance(v) < 0.6 for v in vistos):
+                continue
+            vistos.append(tr)
+            txt = f"{tr.length:.2f} m"
+            w, h = _medida_cota(txt, tam_m)
+            if tr.length * m < w + tam_m * 1.5:
+                continue
+            for fr in (0.5, 0.38, 0.62, 0.28, 0.72):
+                a, b = tr.interpolate(max(0.0, fr * tr.length - 1.0)), tr.interpolate(min(tr.length, fr * tr.length + 1.0))
+                ang = ((math.degrees(math.atan2(b.y - a.y, b.x - a.x)) + 90) % 180) - 90
+                q = tr.interpolate(fr, normalized=True)
+                xy = dib.a_px(q.x, q.y)
+                huella = _caja_girada(xy, w, h, ang)
+                if not (dib.zona[1] < xy[1] < dib.zona[3]) or any(huella.intersects(o) for o in ocupado):
+                    continue
+                _cota(img, xy, txt, tam_m, ang)
+                ocupado.append(huella.buffer(3))
+                break
 
     # simbología y aviso
     yb = dib.zona[3]
@@ -708,6 +816,9 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
     x = W * 0.03
     for col, txt in items:
         d.rectangle([x, yb + hb * 0.22, x + tl * 1.6, yb + hb * 0.22 + tl * 1.1], fill=col, outline=(60, 60, 60))
+        if txt == "Lote":
+            d.rectangle([x + 3, yb + hb * 0.22 + 3, x + tl * 1.6 - 3, yb + hb * 0.22 + tl * 1.1 - 3], outline=(255, 255, 255),
+                        width=2)
         d.text((x + tl * 2.0, yb + hb * 0.22 + tl * 0.55), txt, font=f, fill=(40, 40, 40), anchor="lm")
         x += tl * 2.6 + d.textlength(txt, font=f) + tl * 1.2
     nota = ("Imagen ilustrativa del prediseño" + (" (pintada con IA sobre el trazo exacto)" if ia else "")
