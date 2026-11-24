@@ -753,7 +753,10 @@ def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | 
         except Exception:  # noqa: BLE001
             log.exception("calco %s", vista)
     with ThreadPoolExecutor(max_workers=2) as ex:
-        futuros = {v: ex.submit(pintar, calcos[v], pintor, ins) for v, _, ins in trabajos if v in calcos}
+        # la planta sale bien casi siempre (2 intentos); la aérea el modelo la cambia seguido: 1 intento y, si no
+        # pasa la revisión, va la vista 3D del motor
+        futuros = {v: ex.submit(pintar, calcos[v], pintor, ins, 2 if v == "planta" else 1)
+                   for v, _, ins in trabajos if v in calcos}
         pintadas = {v: f.result() for v, f in futuros.items()}
     out = []
     for vista, (img, info) in pintadas.items():
