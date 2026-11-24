@@ -868,7 +868,8 @@ class Agente:
             partes = [{"origen": p["origen"], "anillo": [(x + cx, y + cy) for x, y in p["anillo"]]} for p in s.partes]
             try:
                 presentacion_ = presentacion.generar(carpeta, base, t, lot, m if t.ubicado else None, s.ficha, nombre,
-                                                     partes or None, getattr(self.llm, "pintar", None))
+                                                     partes or None, getattr(self.llm, "pintar", None),
+                                                     s.proyecto.get("ubicacion", ""))
             except Exception:  # noqa: BLE001
                 log.exception("imagen de presentación")
         pdf = os.path.join(carpeta, f"{base}.pdf")

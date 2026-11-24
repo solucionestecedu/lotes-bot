@@ -1038,18 +1038,19 @@ def rotular_ambiente(img: Image.Image, lot: Resultado, ficha: dict, proyecto: st
 
 # --------------------------------------------------------------------------------------------- todo junto
 def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict | None,
-            proyecto: str, partes: list | None = None, pintor: Callable | None = None) -> list[dict]:
+            proyecto: str, partes: list | None = None, pintor: Callable | None = None, ubicacion: str = "") -> list[dict]:
     """Imágenes de presentación, en el orden en que se mandan:
     - ambiente: vista aérea pintada libre por la IA sobre el 3D del motor (ilustrativa, sin medidas). Si no hay modelo
       o falla, va la vista 3D exacta del motor con sus letreros (vista "aerea"). Necesita relieve.
     - planta: el trazo exacto pintado por la IA (revisado), con linderos, medidas y letreros del motor.
-    - tecnica: plano blanco y negro dibujado solo por el motor (no usa IA).
+    - tecnica: lámina de arquitecto en grises (marco, cuadros de áreas y de lotes, simbología, cajetín) dibujada solo
+      por el motor (motor/plano_tecnico.py, no usa IA).
     Devuelve [{ruta, nombre, titulo, vista, ia, ...}]."""
     ficha = ficha or {}
     calcos = {}
     for vista, fn in (("ambiente", (lambda: calco_aereo(t, lot, malla)) if malla is not None else None),
                       ("planta", lambda: calco_planta(t, lot, malla, ficha)),
-                      ("tecnica", lambda: calco_planta(t, lot, malla, ficha, estilo="tecnico"))):
+                      ("tecnica", lambda: None)):
         if fn is None:
             continue
         try:
@@ -1087,9 +1088,11 @@ def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | 
                 final = rotular_planta(img, dib, lot, ficha, proyecto, partes, ia=info["ia"])
                 titulo = "Plano de presentación con medidas (ilustrativo)"
             else:
+                from .plano_tecnico import generar_tecnico
+
                 info = {"ia": False}
-                final = rotular_planta(dib.imagen, dib, lot, ficha, proyecto, partes, estilo="tecnico")
-                titulo = "Plano técnico de presentación"
+                final = generar_tecnico(t, lot, malla, ficha, proyecto, partes, ubicacion)
+                titulo = "Plano técnico de presentación (lámina)"
         except Exception:  # noqa: BLE001
             log.exception("presentación %s", vista)
             continue

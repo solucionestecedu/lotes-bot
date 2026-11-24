@@ -138,25 +138,20 @@ def test_ambiente_es_libre_y_no_lleva_medidas(tmp_path, caso_chiltiupan):
     assert np.abs(centro - np.array([90, 140, 80])).max() < 12
 
 
-def test_plano_tecnico_es_blanco_y_negro_con_medidas(quintas):
-    _, s, lot = quintas
-    dib = presentacion.calco_planta(s.get_terreno(), lot, None, s.ficha, estilo="tecnico")
-    assert dib.vista == "tecnica"
-    final = np.asarray(presentacion.rotular_planta(dib.imagen, dib, lot, s.ficha, "Prueba", estilo="tecnico"))
-    # el lote es blanco (casi todo: hay casa, alberca y árboles) y su lindero negro
-    l1 = lot.lotes[0]["poly"]
-    x0, y0, x1, y1 = l1.bounds
-    muestras = [final[round(dib.a_px(x, y)[1]), round(dib.a_px(x, y)[0])].min()
-                for x in np.linspace(x0, x1, 25) for y in np.linspace(y0, y1, 25) if l1.buffer(-2).contains(Point(x, y))]
-    assert np.median(muestras) > 245
-    comun = l1.intersection(lot.lotes[1]["poly"])
-    negros = 0
-    for fr in (0.2, 0.25, 0.3, 0.75, 0.8):
-        q = comun.interpolate(fr, normalized=True)
-        x, y = dib.a_px(q.x, q.y)
-        negros += int(final[round(y), round(x)].max() < 90)
-    assert negros >= 3
+def test_plano_tecnico_es_lamina_con_cuadros(quintas):
+    from motor.plano_tecnico import H_HOJA, W_HOJA, generar_tecnico
 
+    _, s, lot = quintas
+    img = generar_tecnico(s.get_terreno(), lot, None, s.ficha, "Quintas de prueba", None, "San Salvador")
+    assert img.size == (W_HOJA, H_HOJA)
+    a = np.asarray(img).astype(int)
+    # es una lámina en grises: casi nada de color fuerte (solo acentos verdes y del agua)
+    sat = a.max(axis=2) - a.min(axis=2)
+    assert (sat > 40).mean() < 0.03
+    # marco negro alrededor y columna de datos a la derecha con texto
+    assert a[27, W_HOJA // 2].max() < 80 and a[H_HOJA // 2, 27].max() < 80
+    columna = a[100:H_HOJA - 100, W_HOJA - 450:W_HOJA - 60]
+    assert (columna.max(axis=2) < 100).mean() > 0.01
 
 def test_entregables_traen_presentacion_y_hoja_en_pdf(tmp_path):
     class G(GuionQuintas):
