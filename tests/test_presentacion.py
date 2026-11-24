@@ -121,14 +121,16 @@ def test_ambiente_es_libre_y_no_lleva_medidas(tmp_path, caso_chiltiupan):
 
     def pintor(png, instruccion, aspecto):
         vistos.append(instruccion)
-        if instruccion == presentacion.INSTRUCCION_AMBIENTE:  # la IA cambia todo: igual se acepta (es ilustrativa)
+        if instruccion.startswith(presentacion.INSTRUCCION_AMBIENTE):  # la IA cambia todo: igual se acepta
             return _png(Image.new("RGB", (1600, 900), (90, 140, 80)))
         return _png(_repintar(Image.open(io.BytesIO(png)).convert("RGB")))
 
     out = presentacion.generar(str(tmp_path), "ch", t, lot, m, {"acceso_lado": "norte"}, "Chiltiupán", None, pintor)
     assert [o["vista"] for o in out] == ["ambiente", "planta", "tecnica"]
     assert out[0]["ia"]
-    assert presentacion.INSTRUCCION_AMBIENTE in vistos
+    amb = next(v for v in vistos if v.startswith(presentacion.INSTRUCCION_AMBIENTE))
+    # le dice dónde va la entrada y cuántas casas van de cada lado (las del motor)
+    assert "gated entrance" in amb and f"{len(lot.lotes)} in total" in amb
     # el ambiente solo lleva título y aviso abajo/arriba: el centro de la imagen queda como lo pintó la IA
     img = np.asarray(Image.open(out[0]["ruta"]).convert("RGB")).astype(int)
     h, w, _ = img.shape

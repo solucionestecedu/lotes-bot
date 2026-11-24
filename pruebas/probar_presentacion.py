@@ -45,7 +45,7 @@ def main():
         os.environ["PRESENTACION_CRUDO"] = carpeta
         if reusar:
             def pintor(png, instruccion, aspecto, carpeta=carpeta):
-                vista = ("ambiente" if instruccion == presentacion.INSTRUCCION_AMBIENTE
+                vista = ("ambiente" if instruccion.startswith(presentacion.INSTRUCCION_AMBIENTE)
                          else "aerea" if aspecto == "16:9" else "planta")
                 with open(os.path.join(carpeta, f"{vista}-modelo.png"), "rb") as f:
                     return f.read()

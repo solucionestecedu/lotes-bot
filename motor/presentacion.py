@@ -461,6 +461,34 @@ INSTRUCCION_AMBIENTE = (
 )
 
 
+
+def guia_ambiente(dib: Dibujo, lot: Resultado) -> str:
+    """Datos del trazo que la IA debe respetar en la imagen de ambiente, dichos según la cámara: de qué lado de la
+    imagen queda la entrada con el portón y de cuál el redondel, y cuántas casas van a cada lado de la calle."""
+    st = lot.stats
+    ent, ret = st.get("entrada_calle"), st.get("retorno_centro")
+    if st.get("modo") != "calle_central" or not ent or not ret:
+        return ""
+    (ex, ey), (rx, ry) = dib.a_px(*ent), dib.a_px(*ret)
+    lejos, cerca = ("top (far)", "bottom (near the camera)") if ey < ry else ("bottom (near the camera)", "top (far)")
+    (nx_, ny_), (fx, fy) = ((ex, ey), (rx, ry)) if ey > ry else ((rx, ry), (ex, ey))  # extremo cercano y lejano
+    izq = der = 0
+    for l in lot.lotes:
+        c = l["poly"].centroid
+        x, y = dib.a_px(c.x, c.y)
+        # de qué lado de la calle queda el lote en la imagen: mirando del extremo cercano al lejano (hacia arriba),
+        # producto cruz positivo = a la derecha
+        cruz = (fx - nx_) * (y - ny_) - (fy - ny_) * (x - nx_)
+        if cruz > 0:
+            der += 1
+        else:
+            izq += 1
+    return (f" LAYOUT TO KEEP: the gated entrance with the gatehouse is at the {lejos} end of the road, where it meets "
+            f"the public street; the road ends in the round turnaround at the {cerca} end. Do not swap them. There are "
+            f"exactly {izq} houses on the left side of the road and {der} on the right side as seen in the image, "
+            f"{izq + der} in total.")
+
+
 def _gradiente(img: Image.Image, zona, L: int = 512) -> np.ndarray:
     W, H = img.size
     k = L / max(W, H)
@@ -735,7 +763,7 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
         rej = dib.extra.get("rejilla")
         if rej and dib.extra.get("ubicado"):
             paso_g, gx0, gy0, gx1, gy1 = rej
-            fg = max(11, int(m * 1.3))
+            fg = max(14, int(m * 1.6))
             for gx in range(int(math.ceil(gx0 / paso_g)), int(gx1 // paso_g) + 1):
                 x, _ = dib.a_px(gx * paso_g, gy1)
                 if dib.zona[0] + 60 < x < dib.zona[2] - 60:
@@ -1036,7 +1064,8 @@ def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | 
         if "planta" in calcos:
             futuros["planta"] = ex.submit(pintar, calcos["planta"], pintor, INSTRUCCION_PLANTA, 2)
         if "ambiente" in calcos:
-            futuros["ambiente"] = ex.submit(pintar, calcos["ambiente"], pintor, INSTRUCCION_AMBIENTE, 1, False)
+            ins = INSTRUCCION_AMBIENTE + guia_ambiente(calcos["ambiente"], lot)
+            futuros["ambiente"] = ex.submit(pintar, calcos["ambiente"], pintor, ins, 1, False)
         pintadas = {v: f.result() for v, f in futuros.items()}
     out = []
     for vista in ("ambiente", "planta", "tecnica"):
