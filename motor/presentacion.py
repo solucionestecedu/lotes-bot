@@ -355,7 +355,8 @@ INSTRUCCION_PLANTA = (
     "size and shape. Do not add, remove, move, merge or resize any lot, house, road or area. Do not write any text, "
     "letters, numbers, labels, logos or watermarks anywhere. Keep the plain paper bands at the top and at the "
     "bottom empty. Style: soft natural daylight from the upper left with gentle shadows; lots are well-kept lawns; "
-    "houses have terracotta clay-tile roofs seen from above; roads are grey asphalt with light curbs; the light green "
+    "houses have terracotta clay-tile roofs seen from above; the grey band is the only road (grey asphalt with light "
+    "curbs), do not add other roads or tracks; the light green "
     "area is a recreational park lawn with tropical trees; the dark green strip is dense protected ravine forest; "
     "the blue line is a small creek; outside the property, a muted rural landscape. Crisp and realistic, not cartoonish."
 )
@@ -364,7 +365,9 @@ INSTRUCCION_AEREA = (
     "Repaint it as a photorealistic architectural aerial rendering. STRICT RULES: keep the same camera, horizon and "
     "composition, pixel-aligned with the input. Every lot boundary, road, roundabout, house and green area must stay "
     "exactly where it is, with the same size and shape. Do not add, remove, move or resize any lot, house, road or "
-    "area. Do not write any text, letters, numbers, labels, logos or watermarks. Style: late-morning tropical light, "
+    "area. The grey strip ending in a small round turnaround is the ONLY road: do not add any other road, path, "
+    "driveway or dirt track, and do not extend it. The light green and dark green areas are lawn and dense forest "
+    "and must stay vegetation. Do not write any text, letters, numbers, labels, logos or watermarks. Style: late-morning tropical light, "
     "lush green lawns on the lots, simple modern one-storey houses with terracotta roofs, grey asphalt road, dense "
     "tropical forest in the dark green protected strip, soft blue sky."
 )
@@ -447,8 +450,18 @@ def clases_ok(medidas: dict) -> tuple[bool, str]:
     return True, ""
 
 
-def pintar(dibujo: Dibujo, pintor: Callable | None, instruccion: str) -> tuple[Image.Image, dict]:
-    """Devuelve (imagen, info). Si no hay pintor, falla o mueve el dibujo, regresa el calco."""
+def pintar(dibujo: Dibujo, pintor: Callable | None, instruccion: str, intentos: int = 2) -> tuple[Image.Image, dict]:
+    """Devuelve (imagen, info). Si el modelo falla o cambia el dibujo se reintenta; si sigue mal, el calco."""
+    info = {}
+    for k in range(intentos):
+        img, info = _pintar_una(dibujo, pintor, instruccion)
+        info["intentos"] = k + 1
+        if info["ia"] or pintor is None:
+            break
+    return img, info
+
+
+def _pintar_una(dibujo: Dibujo, pintor: Callable | None, instruccion: str) -> tuple[Image.Image, dict]:
     info = {"ia": False}
     if pintor is None:
         info["motivo"] = "sin modelo de imagen"
