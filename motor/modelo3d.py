@@ -74,11 +74,13 @@ def _sobre_terreno(m: Malla, linea, paso=1.5, alza=0.12):
     return list(zip(xs.tolist(), ys.tolist(), zs.tolist()))
 
 
-def _casa(escena: Escena, m: Malla, lote: dict, calles, angulo: float):
+def huella_casa(lote: dict, calles, angulo: float) -> list[tuple[float, float]] | None:
+    """Planta de la casa tipo de un lote: 4 esquinas (frente izq., frente der., fondo der., fondo izq. según u, v).
+    La casa se recarga hacia la calle dejando 3 m de retiro; el ancho va paralelo a la calle."""
     poly = lote["poly"]
     interior = poly.buffer(-1.2)
     if interior.is_empty or interior.area < 30:
-        return
+        return None
     th = math.radians(angulo)
     ux, uy = math.cos(th), math.sin(th)          # a lo largo de la calle
     vx, vy = -uy, ux                              # hacia el fondo
@@ -93,13 +95,31 @@ def _casa(escena: Escena, m: Malla, lote: dict, calles, angulo: float):
     fondo_lote = lote["area"] / max(lote["frente"], 1)
     prof = min(9.0, fondo_lote * 0.45)
     corrimiento = max(0.0, fondo_lote / 2 - 3.0 - prof / 2)
-    cx, cy = c.x - vx * corrimiento, c.y - vy * corrimiento
+    centros = [(c.x - vx * corrimiento, c.y - vy * corrimiento)]
+    # lotes irregulares (cuñas, lotes con cola): probar pegado a la calle y en el punto más holgado del lote
+    if calles is not None and not calles.is_empty:
+        p_calle, p_lote = nearest_points(calles, poly)
+        for dentro in (3.0 + prof / 2, 3.0 + prof):
+            centros.append((p_lote.x + vx * dentro, p_lote.y + vy * dentro))
+    try:
+        from shapely.ops import polylabel
+
+        q = polylabel(interior if interior.geom_type == "Polygon" else poly, tolerance=0.5)
+        centros.append((q.x, q.y))
+    except Exception:  # noqa: BLE001
+        pass
     for escala in (1.0, 0.85, 0.7):
         w, d = ancho * escala / 2, prof * escala / 2
-        esquinas = [(cx + sx * w * ux + sy * d * vx, cy + sx * w * uy + sy * d * vy) for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
-        if Polygon(esquinas).within(interior):
-            break
-    else:
+        for cx, cy in centros:
+            esquinas = [(cx + sx * w * ux + sy * d * vx, cy + sx * w * uy + sy * d * vy) for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+            if Polygon(esquinas).within(interior):
+                return esquinas
+    return None
+
+
+def _casa(escena: Escena, m: Malla, lote: dict, calles, angulo: float):
+    esquinas = huella_casa(lote, calles, angulo)
+    if esquinas is None:
         return
     zs = _alturas(m, [p[0] for p in esquinas], [p[1] for p in esquinas])
     z0, z1 = float(zs.min()) - 0.3, float(zs.max()) + ALTO_MUROS
@@ -205,11 +225,11 @@ def dxf(ruta: str, escena: Escena) -> str:
 
 
 # ---------------------------------------------------------------------------- vista aérea
-def vista(ruta: str, escena: Escena, t: Terreno, titulo: str = "", subtitulo: str = "",
-          ancho: int = 1600, alto: int = 1000, elevacion: float = 38.0, malla: Malla | None = None) -> str:
-    """Dibuja una vista aérea en perspectiva (algoritmo del pintor) y la guarda como JPG."""
-    from matplotlib import font_manager
-    from PIL import Image, ImageDraw, ImageFont
+def render_aereo(escena: Escena, t: Terreno, ancho: int = 1600, alto: int = 1000, elevacion: float = 38.0,
+                 malla: Malla | None = None, lineas: bool = True):
+    """Vista aérea en perspectiva (algoritmo del pintor), sin textos. Devuelve (imagen PIL, pantalla) donde
+    pantalla(x, y, z) da la posición en píxeles de un punto del terreno."""
+    from PIL import Image, ImageDraw
 
     S = 2  # se dibuja al doble y se reduce: bordes suaves
     W, H = ancho * S, alto * S
@@ -272,7 +292,7 @@ def vista(ruta: str, escena: Escena, t: Terreno, titulo: str = "", subtitulo: st
 
     # líneas (bordes de lotes y lindero) como elementos con su propia profundidad
     segs = []
-    for nombre, color, grosor in (("lotes", (120, 92, 52), 2), ("lindero", (178, 34, 34), 4)):
+    for nombre, color, grosor in ((("lotes", (120, 92, 52), 2), ("lindero", (178, 34, 34), 4)) if lineas else ()):
         for pl in escena.lineas.get(nombre, []):
             Q = np.array(pl) - cam
             qx, qy, qz = Q @ der, Q @ arr, np.maximum(Q @ f, 1e-3)
@@ -294,28 +314,50 @@ def vista(ruta: str, escena: Escena, t: Terreno, titulo: str = "", subtitulo: st
             _, (x1, y1, x2, y2), col, g = segs[k]
             dib.line([(x1, y1), (x2, y2)], fill=col, width=g)
     img = img.resize((ancho, alto), Image.LANCZOS)
+
+    def pantalla(x, y, z):
+        q = np.array([x, y, z]) - cam
+        return (ox + esc * (q @ der) / max(q @ f, 1e-3)) / S, (oy - esc * (q @ arr) / max(q @ f, 1e-3)) / S
+
+    pantalla.zc = zc
+    pantalla.centro = (c.x, c.y)
+    return img, pantalla
+
+
+def flecha_norte(dib, pantalla, kx: float, ky: float, R: float = 40, fuente_negrita: str | None = None):
+    """Rosa del norte para una vista en perspectiva: apunta hacia donde queda el norte en la imagen."""
+    from matplotlib import font_manager
+    from PIL import ImageFont
+
+    cx_, cy_ = pantalla.centro
+    p0, p1 = pantalla(cx_, cy_, pantalla.zc), pantalla(cx_, cy_ + 10, pantalla.zc)
+    nx_, ny_ = p1[0] - p0[0], p1[1] - p0[1]
+    nl = math.hypot(nx_, ny_) or 1
+    nx_, ny_ = nx_ / nl, ny_ / nl
+    k = R / 40
+    dib.ellipse([kx - R, ky - R, kx + R, ky + R], fill=(255, 255, 255, 210))
+    punta = (kx + nx_ * 14 * k, ky + ny_ * 14 * k)
+    cola = (kx - nx_ * 24 * k, ky - ny_ * 24 * k)
+    izq = (cola[0] - ny_ * 10 * k, cola[1] + nx_ * 10 * k)
+    der_ = (cola[0] + ny_ * 10 * k, cola[1] - nx_ * 10 * k)
+    dib.polygon([punta, izq, (kx - nx_ * 14 * k, ky - ny_ * 14 * k), der_], fill=(30, 30, 30))
+    negrita = fuente_negrita or font_manager.findfont(font_manager.FontProperties(family="DejaVu Sans", weight="bold"))
+    fN = ImageFont.truetype(negrita, int(18 * k))
+    dib.text((kx + nx_ * 27 * k, ky + ny_ * 27 * k), "N", font=fN, fill=(30, 30, 30), anchor="mm")
+
+
+def vista(ruta: str, escena: Escena, t: Terreno, titulo: str = "", subtitulo: str = "",
+          ancho: int = 1600, alto: int = 1000, elevacion: float = 38.0, malla: Malla | None = None) -> str:
+    """Vista aérea en perspectiva con título y norte, guardada como JPG."""
+    from matplotlib import font_manager
+    from PIL import ImageDraw, ImageFont
+
+    img, pantalla = render_aereo(escena, t, ancho, alto, elevacion, malla)
     dib = ImageDraw.Draw(img, "RGBA")
     fuente = font_manager.findfont("DejaVu Sans")
     negrita = font_manager.findfont(font_manager.FontProperties(family="DejaVu Sans", weight="bold"))
     f1, f2 = ImageFont.truetype(negrita, 30), ImageFont.truetype(fuente, 18)
-    # flecha del norte: hacia dónde queda el norte en la imagen
-    def pantalla(x, y, z):
-        q = np.array([x, y, z]) - cam
-        return (ox + esc * (q @ der) / max(q @ f, 1e-3)) / S, (oy - esc * (q @ arr) / max(q @ f, 1e-3)) / S
-    p0, p1 = pantalla(c.x, c.y, zc), pantalla(c.x, c.y + 10, zc)
-    nx_, ny_ = p1[0] - p0[0], p1[1] - p0[1]
-    nl = math.hypot(nx_, ny_) or 1
-    nx_, ny_ = nx_ / nl, ny_ / nl
-    kx, ky, R = ancho - 72, 72, 40
-    dib.ellipse([kx - R, ky - R, kx + R, ky + R], fill=(255, 255, 255, 210))
-    punta = (kx + nx_ * 14, ky + ny_ * 14)
-    cola = (kx - nx_ * 24, ky - ny_ * 24)
-    izq = (cola[0] - ny_ * 10, cola[1] + nx_ * 10)
-    der_ = (cola[0] + ny_ * 10, cola[1] - nx_ * 10)
-    dib.polygon([punta, izq, (kx - nx_ * 14, ky - ny_ * 14), der_], fill=(30, 30, 30))
-    fN = ImageFont.truetype(negrita, 18)
-    tx, ty = kx + nx_ * 27, ky + ny_ * 27
-    dib.text((tx, ty), "N", font=fN, fill=(30, 30, 30), anchor="mm")
+    flecha_norte(dib, pantalla, ancho - 72, 72, 40, negrita)
     dib.rectangle([0, alto - 92, ancho, alto], fill=(255, 255, 255, 215))
     dib.text((24, alto - 84), titulo or "Anteproyecto de lotificación", font=f1, fill=(30, 30, 30))
     dib.text((24, alto - 40), subtitulo or "Vista 3D ilustrativa", font=f2, fill=(70, 70, 70))

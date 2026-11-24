@@ -12,6 +12,9 @@ ENTORNO = _env("ENTORNO", "produccion")  # produccion | dev
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
 MODELO_CHAT = _env("MODELO_CHAT", "gemini-3.8-flash")
 MODELO_VISION = _env("MODELO_VISION", "gemini-3.8-flash")
+# Modelo de imagen (Nano Banana) que pinta la imagen de presentación sobre el trazo exacto. Vacío = sin pintar.
+MODELO_IMAGEN = _env("MODELO_IMAGEN", "gemini-nano-banana-2.1")
+TAMANO_IMAGEN = _env("TAMANO_IMAGEN", "2K")  # 1K | 2K | 4K
 
 # WhatsApp Cloud API (Meta)
 META_APP_SECRET = _env("META_APP_SECRET")

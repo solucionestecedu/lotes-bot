@@ -44,7 +44,8 @@ def _temperatura(modelo: str, valor: float) -> float | None:
 class GeminiLLM(LLM):
     puede_ver = True
 
-    def __init__(self, api_key: str, modelo_chat: str, modelo_vision: str, timeout_s: float | None = None):
+    def __init__(self, api_key: str, modelo_chat: str, modelo_vision: str, timeout_s: float | None = None,
+                 modelo_imagen: str = "", tamano_imagen: str = "2K"):
         import os
 
         from google import genai
@@ -55,6 +56,10 @@ class GeminiLLM(LLM):
         self.client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=int(timeout_s * 1000)))
         self.modelo_chat = modelo_chat
         self.modelo_vision = modelo_vision
+        self.modelo_imagen = modelo_imagen
+        self.tamano_imagen = tamano_imagen
+        if not modelo_imagen:
+            self.pintar = None  # sin modelo de imagen: la presentación sale con el calco
 
     def _contenidos(self, mensajes):
         from google.genai import types
@@ -109,6 +114,23 @@ class GeminiLLM(LLM):
                                                temperature=_temperatura(self.modelo_vision, 0.0)),
         )
         return json.loads(r.text)
+
+    def pintar(self, png: bytes, instruccion: str, aspecto: str) -> bytes | None:
+        """Pinta una imagen a partir de un dibujo (Nano Banana). Devuelve los bytes de la imagen o None."""
+        from google.genai import types
+
+        r = self.client.models.generate_content(
+            model=self.modelo_imagen,
+            contents=[types.Part.from_bytes(data=png, mime_type="image/png"), instruccion],
+            config=types.GenerateContentConfig(
+                response_modalities=["IMAGE"],
+                image_config=types.ImageConfig(aspect_ratio=aspecto, image_size=self.tamano_imagen)),
+        )
+        for cand in r.candidates or []:
+            for parte in (cand.content.parts if cand.content else None) or []:
+                if parte.inline_data and parte.inline_data.data:
+                    return parte.inline_data.data
+        return None
 
 
 # ---------------------------------------------------------------------------- sin IA
@@ -175,5 +197,6 @@ class ReglasLLM(LLM):
 
 def crear(config) -> LLM:
     if config.GEMINI_API_KEY:
-        return GeminiLLM(config.GEMINI_API_KEY, config.MODELO_CHAT, config.MODELO_VISION)
+        return GeminiLLM(config.GEMINI_API_KEY, config.MODELO_CHAT, config.MODELO_VISION,
+                         modelo_imagen=getattr(config, "MODELO_IMAGEN", ""), tamano_imagen=getattr(config, "TAMANO_IMAGEN", "2K"))
     return ReglasLLM()

@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass, field
 
 import config
-from motor import colindancia, exportar, lamina, modelo3d, normas, proyeccion, relieve
+from motor import colindancia, exportar, lamina, modelo3d, normas, presentacion, proyeccion, relieve
 from motor.calle_central import lindero_comun, lotificar_calle_central
 from motor.lotificacion import (LADOS, ErrorLotificacion, Parametros, franja_de_proteccion, lotificar,
                                 punto_de_acceso)
@@ -273,8 +273,10 @@ FLUJO:
    (qué cumple, qué no, qué falta revisar, con su artículo). Con calle central di cuántos lotes quedan de cada lado (o de
    cada terreno), su área y frente, y la alternativa que traiga "alternativas" (por ejemplo con 4 en vez de 5). Si algo no cumple, propone cómo arreglarlo y pregunta antes
    de rehacer.
-6. ENTREGABLES → generar_entregables: vista 3D, lámina PDF con el cuadro de cumplimiento, KML, DXF 2D y DXF 3D. Pide
-   nombre del proyecto y municipio si no los tienes.
+6. ENTREGABLES → generar_entregables: imagen de presentación en planta y vista aérea (tipo plano de ventas), lámina
+   PDF con el cuadro de cumplimiento, KML, DXF 2D y DXF 3D. Pide nombre del proyecto y municipio si no los tienes. Las
+   imágenes de presentación son ilustrativas: di que los números son del motor y que las medidas válidas están en la
+   lámina; si "pintada_con_ia" es false, solo menciona que salió con el trazo del motor.
 
 MÁXIMO APROVECHAMIENTO (lo que buscan los desarrolladores):
 - predisenar ya lo hace por defecto: pone el área verde en la tierra menos vendible (la franja de la quebrada cuenta como
@@ -858,8 +860,19 @@ class Agente:
         carpeta = os.path.join(self.dir, uuid.uuid4().hex)
         os.makedirs(carpeta, exist_ok=True)
         base = _slug(nombre)
+        # imagen de presentación: el motor traza, el modelo de imagen solo pinta, los letreros los pone el motor
+        presentacion_ = []
+        if lot is not None:
+            cx, cy = t.centroide()
+            partes = [{"origen": p["origen"], "anillo": [(x + cx, y + cy) for x, y in p["anillo"]]} for p in s.partes]
+            try:
+                presentacion_ = presentacion.generar(carpeta, base, t, lot, m if t.ubicado else None, s.ficha, nombre,
+                                                     partes or None, getattr(self.llm, "pintar", None))
+            except Exception:  # noqa: BLE001
+                log.exception("imagen de presentación")
         pdf = os.path.join(carpeta, f"{base}.pdf")
-        info = lamina.generar(pdf, t, m, lot, datos, cumplimiento=filas)
+        info = lamina.generar(pdf, t, m, lot, datos, cumplimiento=filas,
+                              imagenes=[(p["ruta"], p["titulo"]) for p in presentacion_ if p["vista"] == "planta"])
         cs = None
         if m is not None:
             from shapely.geometry import Polygon
@@ -876,18 +889,27 @@ class Agente:
         archivos.append((dxf, "Plano 2D para AutoCAD / Civil 3D (coordenadas Lambert SIRGAS)"))
         if m is not None and t.ubicado:
             escena = modelo3d.construir(t, m, lot)
-            jpg = os.path.join(carpeta, f"{base}-vista-3d.jpg")
-            sub = (f"{len(lot.lotes)} lotes · " if lot else "") + (s.proyecto.get("ubicacion") or "")
-            modelo3d.vista(jpg, escena, t, nombre, sub.strip(" ·"), malla=m)
-            archivos.insert(0, (jpg, "Vista 3D ilustrativa del anteproyecto"))
+            if not any(p["vista"] == "aerea" for p in presentacion_):  # la aérea de presentación ya es la vista 3D
+                jpg = os.path.join(carpeta, f"{base}-vista-3d.jpg")
+                sub = (f"{len(lot.lotes)} lotes · " if lot else "") + (s.proyecto.get("ubicacion") or "")
+                modelo3d.vista(jpg, escena, t, nombre, sub.strip(" ·"), malla=m)
+                archivos.insert(0, (jpg, "Vista 3D ilustrativa del anteproyecto"))
             dxf3d = os.path.join(carpeta, f"{base}-3d.dxf")
             modelo3d.dxf(dxf3d, escena)
             archivos.append((dxf3d, "Modelo 3D para AutoCAD: terreno, lotes, calles y casas tipo (vista Realista → Render)"))
+        for p in reversed(presentacion_):
+            archivos.insert(0, (p["ruta"], p["titulo"]))
         for ruta, titulo in archivos:
             salidas.append({"tipo": "archivo", "ruta": ruta, "nombre": os.path.basename(ruta), "titulo": titulo,
                             "imagen": ruta.endswith(".jpg")})
-        return {"ok": True, "archivos_enviados": [os.path.basename(a) for a, _ in archivos], "escala": f"1:{info['escala']:,}",
-                "hojas": info["hojas"], "nota": "Los archivos se envían automáticamente después de tu mensaje."}
+        out = {"ok": True, "archivos_enviados": [os.path.basename(a) for a, _ in archivos], "escala": f"1:{info['escala']:,}",
+               "hojas": info["hojas"], "nota": "Los archivos se envían automáticamente después de tu mensaje."}
+        if presentacion_:
+            out["presentacion"] = [{"vista": p["vista"], "pintada_con_ia": p["ia"], **({"motivo": p["motivo"]} if p.get("motivo") else {})}
+                                   for p in presentacion_]
+            out["nota_presentacion"] = ("Las imágenes de presentación son ilustrativas: el trazo y los números son del "
+                                        "motor; la IA solo pinta. Las medidas válidas están en la lámina.")
+        return out
 
 
 def _slug(texto: str) -> str:

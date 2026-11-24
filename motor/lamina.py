@@ -386,7 +386,9 @@ def _eje_principal(poly: Polygon):
 
 # ---------------------------------------------------------------------------- láminas
 def generar(ruta: str, t: Terreno, malla: Malla | None = None, lot: Resultado | None = None,
-            datos: Datos | None = None, intervalo: float | None = None, cumplimiento: list | None = None) -> dict:
+            datos: Datos | None = None, intervalo: float | None = None, cumplimiento: list | None = None,
+            imagenes: list | None = None) -> dict:
+    """imagenes: [(ruta_jpg, titulo)] que se agregan como hojas al final (p. ej. la imagen de presentación)."""
     datos = datos or Datos()
     poly = Polygon(t.puntos)
     minx, miny, maxx, maxy = poly.bounds
@@ -579,5 +581,29 @@ def generar(ruta: str, t: Terreno, malla: Malla | None = None, lot: Resultado | 
                 x += ancho
             pdf.savefig(fig)
             plt.close(fig)
+
+        # ---------------- hojas de imagen (presentación ilustrativa)
+        for ruta_img, titulo_img in imagenes or []:
+            try:
+                from PIL import Image as _Img
+
+                im = _Img.open(ruta_img).convert("RGB")
+            except Exception:  # noqa: BLE001
+                continue
+            fig = plt.figure(figsize=(HOJA_W / 25.4, HOJA_H / 25.4))
+            ax = fig.add_axes([0, 0, 1, 1])
+            ax.set_xlim(0, HOJA_W)
+            ax.set_ylim(0, HOJA_H)
+            ax.axis("off")
+            _caja(ax, *MARCO, lw=1.2)
+            _t(ax, MARCO[0] + 4, MARCO[3] - 6, f"{datos.proyecto.upper()} — {titulo_img.upper()}", 9, weight="bold")
+            aw, ah = MARCO[2] - MARCO[0] - 8, MARCO[3] - MARCO[1] - 16
+            r_ = im.width / im.height
+            w_, h_ = (aw, aw / r_) if aw / r_ <= ah else (ah * r_, ah)
+            x_, y_ = MARCO[0] + 4 + (aw - w_) / 2, MARCO[1] + 4 + (ah - h_) / 2
+            ax.imshow(im, extent=(x_, x_ + w_, y_, y_ + h_), interpolation="lanczos")
+            pdf.savefig(fig, dpi=200)
+            plt.close(fig)
+            hojas_extra.append(None)
     return {"ruta": ruta, "escala": escala, "hojas": n_hojas + len(hojas_extra), "intervalo_curvas": intervalo,
             "estadisticas": st}

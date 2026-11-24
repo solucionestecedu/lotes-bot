@@ -97,10 +97,12 @@ def test_flujo_completo(tmp_path, malla_local):
     assert 26 <= n_lotes <= 36
     out = ag.atender(s, "mándame la lámina")
     archivos = [o for o in out if o["tipo"] == "archivo"]
-    assert [a["nombre"] for a in archivos] == ["lotificacion-chiltiupan-vista-3d.jpg", "lotificacion-chiltiupan.pdf",
+    # primero las imágenes de presentación (planta y aérea, que reemplaza a la vista 3D), luego los planos
+    assert [a["nombre"] for a in archivos] == ["lotificacion-chiltiupan-presentacion-planta.jpg",
+                                                "lotificacion-chiltiupan-presentacion-aerea.jpg", "lotificacion-chiltiupan.pdf",
                                                 "lotificacion-chiltiupan.kml", "lotificacion-chiltiupan.dxf",
                                                 "lotificacion-chiltiupan-3d.dxf"]
-    assert archivos[0]["imagen"] and not any(a["imagen"] for a in archivos[1:])
+    assert archivos[0]["imagen"] and archivos[1]["imagen"] and not any(a["imagen"] for a in archivos[2:])
     assert all(os.path.getsize(a["ruta"]) > 1000 for a in archivos)
 
     # El estado que ve el modelo resume lo hecho, y el historial guarda solo texto.
@@ -129,7 +131,7 @@ def test_modo_sin_ia_flujo(tmp_path, malla_local):
 
     assert int(re.search(r"(\d+) lotes", ag.atender(s, "lotes")[0]["texto"]).group(1)) >= 26
     out = ag.atender(s, "lámina")
-    assert sum(o["tipo"] == "archivo" for o in out) == 5
+    assert sum(o["tipo"] == "archivo" for o in out) == 6
 
 
 def test_modo_sin_ia_pide_texto_si_mandan_foto(tmp_path):

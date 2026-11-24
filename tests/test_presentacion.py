@@ -1,0 +1,126 @@
+"""Imagen de presentación: el motor traza, el modelo de imagen solo pinta, los letreros los pone el motor."""
+import io
+import json
+
+import numpy as np
+import pytest
+from PIL import Image, ImageFilter
+from pypdf import PdfReader
+
+from agente import Agente, Sesion
+from motor import presentacion
+from test_calle_central import GuionQuintas
+from test_normas import caso_chiltiupan  # noqa: F401
+
+
+@pytest.fixture(scope="module")
+def quintas(tmp_path_factory):
+    ag = Agente(GuionQuintas(), str(tmp_path_factory.mktemp("q")))
+    s = Sesion("q")
+    ag.atender(s, "plano", [{"mime": "image/jpeg", "nombre": "p.jpg", "datos": b"x"}])
+    ag.atender(s, "unir")
+    ag.atender(s, "quintas")
+    ag.atender(s, "lotes")
+    lot, _ = ag._lotificar(s)
+    return ag, s, lot
+
+
+def _png(img):
+    b = io.BytesIO()
+    img.save(b, "PNG")
+    return b.getvalue()
+
+
+def _repintar(img):
+    """Simula un modelo que pinta sin mover nada: cambia colores, mete textura y suaviza."""
+    a = np.asarray(img).astype(np.float32)
+    lote = np.all(np.abs(a - np.array(presentacion.C["lote"])) < 25, axis=2)
+    a[lote] = [120, 170, 90]
+    a += np.random.default_rng(1).normal(0, 15, a.shape)
+    return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(1.2))
+
+
+def test_calco_sin_texto_y_con_aspecto_valido(quintas):
+    _, s, lot = quintas
+    d = presentacion.calco_planta(s.get_terreno(), lot, None, s.ficha)
+    assert d.aspecto in presentacion.ASPECTOS and max(d.imagen.size) == presentacion.LADO_LARGO
+    w, h = d.imagen.size
+    assert abs(w / h - presentacion.ASPECTOS[d.aspecto]) < 0.01
+    assert "porton" in d.extra and "boca" in d.extra  # proyecto cerrado: portón dibujado
+    assert len(d.extra["casas"]) == len(lot.lotes)    # una casa tipo por lote
+
+
+def test_verificacion_acepta_repintado_y_rechaza_movido(quintas):
+    _, s, lot = quintas
+    d = presentacion.calco_planta(s.get_terreno(), lot, None, s.ficha)
+    ok, info, _ = presentacion.alinear(d.imagen, _repintar(d.imagen), d.zona)
+    assert ok and info["coincidencia"] > 0.4
+    movida = d.imagen.transform(d.imagen.size, Image.AFFINE, (1, 0, 40, 0, 1, 25))
+    assert not presentacion.alinear(d.imagen, movida, d.zona)[0]
+    agrandada = d.imagen.resize((int(d.imagen.width * 1.06), int(d.imagen.height * 1.06))).crop((0, 0, *d.imagen.size))
+    assert not presentacion.alinear(d.imagen, agrandada, d.zona)[0]
+    assert not presentacion.alinear(d.imagen, Image.new("RGB", d.imagen.size, (90, 140, 80)), d.zona)[0]
+    # corrida poquito: se acepta y se acomoda
+    ok, info, _ = presentacion.alinear(d.imagen, _repintar(d.imagen).transform(d.imagen.size, Image.AFFINE, (1, 0, 8, 0, 1, -8)), d.zona)
+    assert ok and info.get("corrimiento_px")
+
+
+def test_generar_con_y_sin_pintor(tmp_path, quintas):
+    _, s, lot = quintas
+    t = s.get_terreno()
+    llamadas = []
+
+    def pintor_bueno(png, instruccion, aspecto):
+        llamadas.append((aspecto, "text" in instruccion.lower()))
+        return _png(_repintar(Image.open(io.BytesIO(png)).convert("RGB")))
+
+    out = presentacion.generar(str(tmp_path), "q", t, lot, None, s.ficha, "Quintas", None, pintor_bueno)
+    assert [o["vista"] for o in out] == ["planta"] and out[0]["ia"] and llamadas
+    assert Image.open(out[0]["ruta"]).size == presentacion.calco_planta(t, lot, None, s.ficha).imagen.size
+
+    def pintor_que_inventa(png, instruccion, aspecto):
+        return _png(Image.new("RGB", (1024, 1024), (120, 170, 90)))
+
+    out = presentacion.generar(str(tmp_path), "q2", t, lot, None, s.ficha, "Quintas", None, pintor_que_inventa)
+    assert not out[0]["ia"] and "calco" in out[0]["motivo"]
+
+    def pintor_que_falla(png, instruccion, aspecto):
+        raise TimeoutError("se trabó")
+
+    out = presentacion.generar(str(tmp_path), "q3", t, lot, None, s.ficha, "Quintas", None, pintor_que_falla)
+    assert not out[0]["ia"] and "falló" in out[0]["motivo"]
+    out = presentacion.generar(str(tmp_path), "q4", t, lot, None, s.ficha, "Quintas", None, None)
+    assert not out[0]["ia"]
+
+
+def test_aerea_con_relieve(tmp_path, caso_chiltiupan):
+    from motor.lotificacion import Parametros
+    from motor.calle_central import lotificar_calle_central
+
+    t, m, _ = caso_chiltiupan
+    lot = lotificar_calle_central(t.puntos, Parametros.de_dict(dict(frente=20, fondo=35, area_minima=600, lado_acceso="norte")),
+                                  m, [], lotes_por_lado=(4, 6))
+    out = presentacion.generar(str(tmp_path), "ch", t, lot, m, {"acceso_lado": "norte"}, "Chiltiupán", None, None)
+    assert [o["vista"] for o in out] == ["planta", "aerea"]
+    assert Image.open(out[1]["ruta"]).size == (presentacion.LADO_LARGO, round(presentacion.LADO_LARGO * 9 / 16))
+
+
+def test_entregables_traen_presentacion_y_hoja_en_pdf(tmp_path):
+    class G(GuionQuintas):
+        pass
+
+    ag = Agente(G(), str(tmp_path))
+    s = Sesion("p")
+    ag.atender(s, "plano", [{"mime": "image/jpeg", "nombre": "p.jpg", "datos": b"x"}])
+    ag.atender(s, "unir")
+    ag.atender(s, "quintas")
+    ag.atender(s, "lotes")
+    out = ag.atender(s, "lamina")
+    res = json.loads(out[0]["texto"][len("RESULTADO "):]) if out[0]["texto"].startswith("RESULTADO ") else None
+    archivos = [o for o in out if o["tipo"] == "archivo"]
+    assert archivos[0]["nombre"].endswith("presentacion-planta.jpg") and archivos[0]["imagen"]
+    pdf = next(a["ruta"] for a in archivos if a["nombre"].endswith(".pdf"))
+    paginas = PdfReader(pdf).pages
+    assert len(paginas) == 3 and "PLANO DE PRESENTACIÓN" in paginas[2].extract_text().upper()
+    if res:
+        assert res["presentacion"][0]["vista"] == "planta" and res["presentacion"][0]["pintada_con_ia"] is False
