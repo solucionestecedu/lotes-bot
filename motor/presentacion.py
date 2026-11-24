@@ -758,6 +758,17 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
         dl.line(per + [per[0]], fill=(0, 0, 0, 255) if tec else (70, 50, 34, 255), width=ancho + (4 if tec else 2),
                 joint="curve")
     img.alpha_composite(capa)
+    # terrenos unidos: lindero entre ellos (trazo y punto) y el nombre de cada uno afuera
+    from .plano_tecnico import _discontinua, terrenos_unidos
+
+    prop_ = Polygon(dib.linderos_px[-1]) if dib.linderos_px else None
+    unidos = terrenos_unidos(unary_union([l["poly"] for l in lot.lotes] + list(lot.calles) + [v["poly"] for v in lot.verdes]
+                                         + list(lot.protecciones)).buffer(0.05).buffer(-0.05), partes) if partes else []
+    for u in unidos:
+        for ln in u["linderos"]:
+            pts = [dib.a_px(*q) for q in ln.coords]
+            _discontinua(d, pts, (255, 255, 255, 230), ancho + 4, 16, 6, punto=True)
+            _discontinua(d, pts, (35, 35, 35, 255), max(2, ancho), 16, 6, punto=True)
     if tec:  # marco del plano y coordenadas de la rejilla
         d.rectangle([dib.zona[0] + 3, dib.zona[1], dib.zona[2] - 4, dib.zona[3]], outline=(0, 0, 0), width=3)
         rej = dib.extra.get("rejilla")
@@ -904,6 +915,20 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
         _texto(d, (x0 + i * paso * m, y0 - 14), f"{i * paso}", 16, False)
     _texto(d, (x0 + 4 * paso * m + 10, y0 + 5), "m", 16, False, anchor="lm")
     ocupado += [box(kx - R, ky - R * 1.8, kx + R, ky + R), box(x0 - 10, y0 - 26, x0 + 4 * paso * m + 30, y0 + 14)]
+
+    # nombre y área de cada terreno unido, afuera de su lado exterior
+    for u in unidos:
+        for q in u["candidatos"]:
+            x, y = dib.a_px(*q)
+            if not (dib.zona[0] + 90 < x < dib.zona[2] - 90 and dib.zona[1] + 40 < y < dib.zona[3] - 40):
+                continue
+            txt = f"{u['nombre']}\n{_fmt(u['area'])} m²"
+            f = _fuente(max(14, min(26, m * 2.2)), True)
+            caja = box(*d.multiline_textbbox((x, y), txt, font=f, anchor="mm", align="center", stroke_width=3))
+            if any(caja.intersects(o) for o in ocupado) or (prop_ is not None and caja.intersects(prop_)):
+                continue
+            _texto(d, (x, y), txt, max(14, min(26, m * 2.2)), True, (30, 30, 30), ocupado=ocupado)
+            break
 
     # medidas de cada lindero de lote (las compartidas, una sola vez), sin encimarse a los letreros
     tam_m = max(12, min(20, m * 1.7))

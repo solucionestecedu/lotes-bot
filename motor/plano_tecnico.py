@@ -60,6 +60,36 @@ def _discontinua(d: ImageDraw.ImageDraw, pts: list, color, ancho: int, lleno: fl
         s += paso
 
 
+def terrenos_unidos(prop: Polygon, partes: list | None) -> list[dict]:
+    """Para un proyecto de varios terrenos unidos: el lindero entre ellos (dentro del proyecto) y dónde poner el
+    nombre de cada uno, afuera de su lado exterior. Coordenadas del terreno."""
+    if not partes or len(partes) < 2:
+        return []
+    out = []
+    polys = [(p_["origen"], Polygon(p_["anillo"]).buffer(0)) for p_ in partes]
+    c = prop.centroid
+    for nombre, g in polys:
+        if g.is_empty:
+            continue
+        interior = g.boundary.difference(prop.exterior.buffer(0.4))
+        exterior = g.boundary.intersection(prop.exterior.buffer(0.4))
+        lineas = [ln for ln in getattr(interior, "geoms", [interior]) if ln.geom_type == "LineString" and ln.length > 2]
+        # candidato para el nombre: puntos del lado exterior, el más alejado del centro del proyecto primero
+        cand = []
+        for ln in getattr(exterior, "geoms", [exterior]):
+            if ln.geom_type != "LineString":
+                continue
+            for k in range(1, 10):
+                q = ln.interpolate(k / 10, normalized=True)
+                dx, dy = q.x - c.x, q.y - c.y
+                dl = math.hypot(dx, dy) or 1
+                cand.append((dl, (q.x + dx / dl * 14, q.y + dy / dl * 14)))
+        cand.sort(key=lambda x: -x[0])
+        etiqueta = nombre.replace("Lote ", "Terreno ").replace("lote ", "terreno ")
+        out.append({"nombre": etiqueta.upper(), "area": g.area, "linderos": lineas, "candidatos": [q for _, q in cand]})
+    return out
+
+
 def generar_tecnico(t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict | None, proyecto: str,
                     partes: list | None = None, ubicacion: str = "") -> Image.Image:
     from .presentacion import _anillos, _caja_girada, _fmt, _puntos_dentro, _tramos
@@ -297,9 +327,13 @@ def generar_tecnico(t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict
         for q in _puntos_dentro(v["poly"].buffer(-2.0), int(v["area"] / 110), rng, 7):
             arbol(q, rng.uniform(2.0, 3.0))
 
-    # linderos de lotes y del terreno
+    # linderos de lotes y del terreno; entre terrenos unidos, línea de trazo y punto
     for l in lot.lotes:
         poli(l["poly"], outline=(35, 35, 35), w=1.3)
+    unidos = terrenos_unidos(prop, partes)
+    for u in unidos:
+        for ln in u["linderos"]:
+            _discontinua(d, [px(*q) for q in ln.coords], (60, 60, 60), ancho(2.0), 16 * S, 5 * S, punto=True)
     poli(prop, outline=NEGRO, w=3.4)
 
     # portón y caseta
@@ -441,6 +475,20 @@ def generar_tecnico(t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict
         if geo.contains(q):
             texto(a_px(q.x, q.y), "quebrada", 11.5, False, AGUA)
 
+    # nombre y área de cada terreno unido, afuera de su lado exterior
+    for u in unidos:
+        for q in u["candidatos"]:
+            if not geo.buffer(-6).contains(Point(q)):
+                continue
+            x, y = a_px(*q)
+            txt = f"{u['nombre']}\n{_m2(u['area'], 2)} m²"
+            f = fuente(14, True)
+            caja = box(*d.multiline_textbbox((x, y), txt, font=f, anchor="mm", align="center", stroke_width=3, spacing=2))
+            if any(caja.intersects(o) for o in ocupado) or caja.intersects(Polygon([a_px(*p_) for p_ in prop.exterior.coords])):
+                continue
+            texto((x, y), txt, 14, True, (60, 60, 60), halo=3)
+            break
+
     # medidas de cada lado de cada lote (las compartidas una vez), sobre la línea
     vistos: list = []
     for l in lot.lotes:
@@ -570,7 +618,7 @@ def generar_tecnico(t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict
     regla(y)
 
     # simbología y cajetín se acomodan abajo; el cuadro de lotes usa lo que queda en medio
-    alto_simb, alto_caj = 8 * 22 + 40, 150
+    alto_simb, alto_caj = (9 if partes and len(partes) > 1 else 8) * 22 + 40, 150
     y_simb = H - MARGEN - 7 - alto_caj - alto_simb
     y += 14
     d.text((X0, y), "CUADRO DE LOTES", font=fuente(13, True), fill=NEGRO, anchor="la")
@@ -615,6 +663,8 @@ def generar_tecnico(t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict
             d.line([(mx0, yc), (mx1, yc)], fill=NEGRO, width=4)
         elif tipo == "lote":
             d.line([(mx0, yc), (mx1, yc)], fill=(35, 35, 35), width=1)
+        elif tipo == "unidos":
+            _discontinua(d, [(mx0, yc), (mx1, yc)], (60, 60, 60), 2, 12, 4, punto=True)
         elif tipo == "calle":
             d.rectangle([mx0, yc - 6, mx1, yc + 6], fill=(232, 232, 232), outline=(70, 70, 70))
         elif tipo == "verde":
@@ -639,10 +689,13 @@ def generar_tecnico(t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict
             d.ellipse([mx0 + 15, yc - 8, mx0 + 31, yc + 8], outline=(125, 138, 120), width=1)
             d.ellipse([mx0 + 22, yc - 1, mx0 + 24, yc + 1], fill=(125, 138, 120))
 
-    for tipo, txt in (("terreno", "Lindero del terreno"), ("lote", "Lindero de lote (medidas en m)"), ("calle", "Calle"),
+    simb = [("terreno", "Lindero del terreno"), ("lote", "Lindero de lote (medidas en m)"), ("calle", "Calle"),
                       ("verde", "Área verde recreativa"), ("proteccion", "Zona de protección de quebrada"),
                       ("curva", "Curvas de nivel (relieve satelital aproximado)"), ("casa", "Casa tipo y alberca (ilustrativas)"),
-                      ("arbol", "Árbol (ilustrativo)")):
+            ("arbol", "Árbol (ilustrativo)")]
+    if unidos:
+        simb.insert(1, ("unidos", "Lindero entre terrenos unidos"))
+    for tipo, txt in simb:
         muestra(tipo)
         d.text((tx, y + 7), txt, font=fuente(12), fill=TINTA, anchor="lm")
         y += 22
