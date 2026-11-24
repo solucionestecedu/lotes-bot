@@ -46,7 +46,7 @@ fi
 PRUEBA_TOKEN="${PRUEBA_TOKEN:-$(openssl rand -hex 12)}"
 echo "4/5 Construyendo y publicando (de 5 a 10 minutos)..."
 gcloud run deploy "$SERVICIO" --source . --region "$REGION" --allow-unauthenticated \
-  --memory 1Gi --cpu 1 --no-cpu-throttling --max-instances 1 --timeout 300 \
+  --memory 2Gi --cpu 1 --no-cpu-throttling --max-instances 1 --timeout 600 \
   --update-env-vars "PRUEBA_TOKEN=${PRUEBA_TOKEN}" \
   --update-secrets "GEMINI_API_KEY=GEMINI_API_KEY:latest" --quiet
 
