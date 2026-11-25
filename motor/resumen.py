@@ -77,7 +77,7 @@ def recortar_dibujo(ruta: str, salida: str) -> str | None:
         im = Image.open(ruta).convert("RGB")
         W, H = im.size
         im = im.crop((MARGEN + 10, MARGEN + 10, W - MARGEN - COLUMNA - 4, H - MARGEN - 10))
-        caja = ImageChops.difference(im, Image.new("RGB", im.size, (255, 255, 255))).point(lambda v: 255 if v > 18 else 0).getbbox()
+        caja = ImageChops.difference(im, Image.new("RGB", im.size, (255, 255, 255))).convert('L').point(lambda v: 255 if v > 40 else 0).getbbox()
         if caja:
             pad = 14
             im = im.crop((max(0, caja[0] - pad), max(0, caja[1] - pad), min(im.width, caja[2] + pad),
@@ -244,19 +244,23 @@ def generar_resumen(ruta: str, t: Terreno, lot: Resultado, malla, ficha: dict | 
     num = 3 if ver else 2
     story.append(P(f"{num}. Lotes", "h"))
     num += 1
-    enc = ["Lote", "Terreno", "Área (m²)", "Área (v²)", "Frente (m)", "Pendiente media", "Desnivel", "Cae hacia"]
+    con_rel = any(l.get("relieve") for l in lot.lotes)
+    enc = ["Lote", "Terreno", "Área (m²)", "Área (v²)", "Frente (m)"] + (["Pendiente media", "Desnivel", "Cae hacia"]
+                                                                       if con_rel else [])
     filas = [enc]
     for l in lot.lotes:
         rl = l.get("relieve") or {}
         filas.append([str(l["id"]), l.get("terreno") or "—", _n(l["area"]), _n(_v2(l["area"])),
-                      _n(l["frente"], 1) if l.get("frente") else "—",
-                      f"{rl['pend_media']:.0f} %" if rl.get("pend_media") is not None else "—",
-                      f"{rl['desnivel']:.1f} m" if rl else "—", rl.get("cae_hacia", "—")])
-    filas.append(["Total", "", _n(sum(areas)), _n(_v2(sum(areas))), "", "", "", ""])
+                      _n(l["frente"], 1) if l.get("frente") else "—"]
+                     + ([f"{rl['pend_media']:.0f} %" if rl.get("pend_media") is not None else "—",
+                         f"{rl['desnivel']:.1f} m" if rl else "—", rl.get("cae_hacia", "—")] if con_rel else []))
+    filas.append(["Total", "", _n(sum(areas)), _n(_v2(sum(areas))), ""] + (["", "", ""] if con_rel else []))
+    anchos_l = ([W * 0.08, W * 0.14, W * 0.14, W * 0.14, W * 0.12, W * 0.14, W * 0.11, W * 0.13] if con_rel
+                else [W * 0.12, W * 0.22, W * 0.22, W * 0.22, W * 0.22])
     tl = Table([[P(c, "cb" if i in (0, len(filas) - 1) else "c") for c in f] for i, f in enumerate(filas)],
-               colWidths=[W * 0.08, W * 0.14, W * 0.14, W * 0.14, W * 0.12, W * 0.14, W * 0.11, W * 0.13], repeatRows=1)
+               colWidths=anchos_l, repeatRows=1)
     sl = [("LINEBELOW", (0, 0), (-1, 0), 0.8, TINTA), ("LINEBELOW", (0, 1), (-1, -2), 0.3, LINEA),
-          ("LINEABOVE", (0, -1), (-1, -1), 0.8, TINTA), ("ALIGN", (2, 1), (-2, -1), "RIGHT"),
+          ("LINEABOVE", (0, -1), (-1, -1), 0.8, TINTA), ("ALIGN", (2, 1), (-2 if con_rel else -1, -1), "RIGHT"),
           ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2)]
     for i, l in enumerate(lot.lotes, start=1):
         rl = l.get("relieve") or {}

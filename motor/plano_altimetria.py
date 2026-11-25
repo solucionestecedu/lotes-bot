@@ -215,7 +215,8 @@ def generar_altimetria(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | N
 
     # estaciones de la calle
     if eje is not None and eje.length > 25:
-        for s_ in range(0, int(eje.length) + 1, 20):
+        paso_e = next(v for v in (20, 40, 50, 100, 200) if v * k >= 64)
+        for s_ in range(0, int(eje.length) + 1, paso_e):
             q = eje.interpolate(s_)
             x_, y_ = a_px(q.x, q.y)
             d.ellipse([x_ - 3, y_ - 3, x_ + 3, y_ + 3], fill=NEGRO)
@@ -352,7 +353,8 @@ def generar_altimetria(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | N
                 d.line([(gx0_, yy_), (gx1_, yy_)], fill=(228, 228, 228), width=1)
                 d.text((gx0_ - 5, yy_), f"{zz:g}", font=fuente(10), fill=GRIS, anchor="rm")
                 zz += paso_z
-            for dd in range(0, int(Lx) + 1, 20):
+            paso_d = next(v for v in (20, 40, 50, 100, 200, 500) if v / Lx * (gx1_ - gx0_) >= 46)
+            for dd in range(0, int(Lx) + 1, paso_d):
                 xx_ = g(dd, z_lo)[0]
                 d.line([(xx_, gy0_), (xx_, gy1_)], fill=(236, 236, 236), width=1)
                 d.text((xx_, gy1_ + 4), f"0+{dd:03d}", font=fuente(9.5), fill=GRIS, anchor="ma")
@@ -412,7 +414,7 @@ def generar_altimetria(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | N
              ("caida", "Caída fuerte (> 50 %): se deja fuera de los lotes"),
              ("proteccion", "Zona de protección y área no lotificada"),
              ("cruz", "Vértice del terreno con su cota (m)"),
-             ("eje", "Eje de la calle con estación y cota cada 20 m")]
+             ("eje", "Eje de la calle con estación y cota")]
     for tipo, txt in items:
         yc = y + 7
         if tipo == "indice":
