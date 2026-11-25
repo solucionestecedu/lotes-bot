@@ -34,6 +34,7 @@ CLASES = {
     "base": ("3D_BASE", 33, (176, 140, 104)),
     "plataforma": ("3D_PLATAFORMAS", 41, (214, 200, 168)),
     "talud": ("3D_TALUDES", 32, (150, 128, 96)),
+    "agua": ("3D_QUEBRADA", 5, (64, 124, 186)),
 }
 ID_CLASE = {c: i for i, c in enumerate(CLASES, start=1)}  # para máscaras de clases (0 = cielo)
 ALTO_MUROS = 2.8
@@ -195,7 +196,7 @@ def _casa(escena: Escena, m: Malla, lote: dict, calles, angulo: float, pad: dict
 
 
 def construir(t: Terreno, malla: Malla, lot: Resultado | None = None, margen: float = 40.0,
-              max_celdas: int = 45000, casas: bool = True, plataformas: list | None = None) -> Escena:
+              max_celdas: int = 45000, casas: bool = True, plataformas: list | None = None, cauce=None) -> Escena:
     """Maqueta: un bloque rectangular de terreno (el predio y sus alrededores) con costados hasta una base. Con
     `plataformas` (altimetria.plataformas) cada casa queda sobre su terraza a la cota de la calle, con sus taludes."""
     terreno = Polygon(t.puntos).buffer(0)
@@ -248,6 +249,16 @@ def construir(t: Terreno, malla: Malla, lot: Resultado | None = None, margen: fl
     pads = {p["id"]: p for p in plataformas or []}
     for p in pads.values():
         _terraza(escena, malla, p, paso)
+    if cauce is not None and cauce.length > 2:  # el agua de la quebrada, para que la IA la ponga donde va
+        cinta = cauce.buffer(2.2, cap_style=2).buffer(0)
+        tris = shapely.delaunay_triangles(cinta.segmentize(max(1.5, paso)))
+        for tri in getattr(tris, "geoms", [tris]):
+            if tri.is_empty or not tri.representative_point().within(cinta.buffer(0.01)):
+                continue
+            pts = list(tri.exterior.coords)[:3]
+            zs = _alturas(malla, [q[0] for q in pts], [q[1] for q in pts])
+            if np.isfinite(zs).all():
+                escena.agregar("agua", tuple((q[0], q[1], float(z) + 0.25) for q, z in zip(pts, zs)))
     if lot is not None:
         escena.lineas["lotes"] = [_sobre_terreno(malla, list(l["poly"].exterior.coords)) for l in lot.lotes]
         if casas:

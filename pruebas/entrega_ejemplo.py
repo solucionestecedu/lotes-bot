@@ -58,7 +58,9 @@ def main():
     print(f"entregables en {time.time() - t0:.0f} s:", json.dumps({k: out.get(k) for k in ("partes", "avisos", "presentacion")},
                                                               ensure_ascii=False), flush=True)
     shutil.rmtree(SALIDA, ignore_errors=True)
-    carpetas = {"Resumen": "1 Resumen ejecutivo", "Carpeta técnica": "2 Carpeta tecnica", "Carpeta comercial": "3 Carpeta comercial"}
+    carpetas = {"Carpeta de prefactibilidad": ".", "Carpeta comercial": "Vistas para reenviar",
+                "Para AutoCAD": "Para AutoCAD y Google Earth", "Resumen": "1 Resumen ejecutivo",
+                "Carpeta técnica": "2 Carpeta tecnica"}
     for i, o in enumerate(salidas, 1):
         parte = next((v for k, v in carpetas.items() if o["titulo"].startswith(k)), "otros")
         os.makedirs(os.path.join(SALIDA, parte), exist_ok=True)

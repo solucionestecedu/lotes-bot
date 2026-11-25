@@ -173,11 +173,10 @@ def test_entregables_traen_presentacion_y_hoja_en_pdf(tmp_path):
     out = ag.atender(s, "lamina")
     res = json.loads(out[0]["texto"][len("RESULTADO "):]) if out[0]["texto"].startswith("RESULTADO ") else None
     archivos = [o for o in out if o["tipo"] == "archivo"]
-    assert archivos[0]["nombre"].endswith("resumen-ejecutivo.pdf")  # sin ubicación: resumen, técnico, lámina..., planta
-    assert archivos[-1]["nombre"].endswith("presentacion-planta.jpg") and archivos[-1]["imagen"]
-    assert archivos[-1]["titulo"].startswith("Carpeta comercial")
-    pdf = next(a["ruta"] for a in archivos if a["nombre"].endswith(".pdf") and "resumen" not in a["nombre"])
-    paginas = PdfReader(pdf).pages
+    assert archivos[0]["nombre"].endswith("carpeta-prefactibilidad.pdf")  # primero el PDF con todo
+    planta = next(a for a in archivos if a["nombre"].endswith("presentacion-planta.jpg"))
+    assert planta["imagen"] and planta["titulo"].startswith("Carpeta comercial")
+    paginas = [p for p in PdfReader(archivos[0]["ruta"]).pages if round(float(p.mediabox.width)) == 1224]  # la lámina
     assert len(paginas) == 3 and "PLANO DE PRESENTACIÓN" in paginas[2].extract_text().upper()
     if res:
         assert res["presentacion"][0]["vista"] == "planta" and res["presentacion"][0]["pintada_con_ia"] is False

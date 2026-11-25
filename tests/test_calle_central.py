@@ -116,8 +116,8 @@ def test_flujo_quintas_con_calle_en_medio(tmp_path):
     assert estados["Protección de quebrada (sur)"]["estado"] == "cumple"
 
     salidas = ag.atender(s, "lamina")
-    pdf = next(o["ruta"] for o in salidas if o.get("nombre", "").endswith(".pdf") and "resumen" not in o["nombre"])
-    assert "CUADRO DE CUMPLIMIENTO" in PdfReader(pdf).pages[1].extract_text()
+    pdf = next(o["ruta"] for o in salidas if o.get("nombre", "").endswith("carpeta-prefactibilidad.pdf"))
+    assert "CUADRO DE CUMPLIMIENTO" in " ".join(p.extract_text() for p in PdfReader(pdf).pages)
 
 
 def test_calle_central_con_relieve_y_3d(tmp_path, caso_chiltiupan):

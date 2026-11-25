@@ -273,7 +273,9 @@ FLUJO:
    (qué cumple, qué no, qué falta revisar, con su artículo). Con calle central di cuántos lotes quedan de cada lado (o de
    cada terreno), su área y frente, y la alternativa que traiga "alternativas" (por ejemplo con 4 en vez de 5). Si algo no cumple, propone cómo arreglarlo y pregunta antes
    de rehacer.
-6. ENTREGABLES → generar_entregables. Salen en tres partes y en este orden:
+6. ENTREGABLES → generar_entregables. Lo primero que llega es la CARPETA DE PREFACTIBILIDAD: un solo PDF con todo
+   (portada, resumen ejecutivo, carpeta técnica con la lámina a escala, carpeta comercial y anexos), para abrirlo sin
+   AutoCAD. Después llegan las vistas (para reenviarlas) y los archivos DXF y KML. Lo que trae el PDF, en orden:
    a) RESUMEN EJECUTIVO (PDF): cuadro general de áreas por terreno en m² y v², verificación de cada plano, lotes con su
       relieve, calle y servicios, relieve, cumplimiento, opciones legales a validar con notario y siguientes pasos.
    b) CARPETA TÉCNICA: plano técnico (planimetría con medidas), plano altimétrico (pendientes, curvas de nivel, perfil
@@ -968,11 +970,41 @@ class Agente:
                 log.exception("resumen ejecutivo")
         archivos += [(r_, f"Carpeta técnica · {t_}") for r_, t_ in tecnica]
         archivos += [(r_, f"Carpeta comercial · {t_}") for r_, t_ in comercial]
+        # todo en un solo PDF (para abrirlo sin AutoCAD); aparte solo van las vistas (para reenviarlas por WhatsApp) y
+        # los archivos de CAD y Google Earth
+        try:
+            from motor.carpeta import generar_carpeta
+
+            img_tec = [(r_, t_) for r_, t_ in tecnica if r_.endswith(".jpg")]
+            lam = next((r_ for r_, _ in tecnica if r_.endswith(".pdf") and "resumen" not in r_), None)
+            cad = [(r_, t_) for r_, t_ in tecnica if r_.endswith((".dxf", ".kml"))]
+            usos = {".kml": "Abrir en Google Earth: el terreno y los lotes sobre el mapa.",
+                    "-3d.dxf": "Abrir en AutoCAD (vista Realista o Render): terreno, lotes, calles y casas en 3D.",
+                    ".dxf": "Abrir en AutoCAD o Civil 3D: plano 2D con coordenadas Lambert SIRGAS por capas."}
+            anexos = [(os.path.basename(r_), next(v for k, v in usos.items() if r_.endswith(k))) for r_, _ in cad]
+            res_pdf = next((r_ for r_, _ in archivos if r_.endswith("-resumen-ejecutivo.pdf")), None)
+            portada = next((p["ruta"] for p in presentacion_ if p["vista"] in ("ambiente", "aerea")), None) or \
+                next((p["ruta"] for p in presentacion_ if p["vista"] == "planta"), None)
+            cifras = []
+            if lot is not None:
+                st_ = lot.stats
+                ar = [l["area"] for l in lot.lotes]
+                cifras = [(f"{st_['lotes']}", "lotes"), (f"{st_['area_util']:,.0f} m²", "vendibles"),
+                          (f"{min(ar):,.0f}–{max(ar):,.0f} m²", "por lote"),
+                          (f"{st_['area_util'] / st_['area_total'] * 100:.0f} %", "del terreno se vende")]
+            cpdf = os.path.join(carpeta, f"{base}-carpeta-prefactibilidad.pdf")
+            generar_carpeta(cpdf, nombre, s.proyecto.get("ubicacion", ""), cifras, portada, res_pdf, img_tec, lam,
+                            comercial, anexos, avisos)
+            archivos = ([(cpdf, "Carpeta de prefactibilidad (PDF con todo: resumen ejecutivo, planos y vistas)")]
+                        + [(r_, f"Carpeta comercial · {t_}") for r_, t_ in comercial]
+                        + [(r_, f"Para AutoCAD y Google Earth · {t_}") for r_, t_ in cad])
+        except Exception:  # noqa: BLE001
+            log.exception("carpeta de prefactibilidad")
         for ruta, titulo in archivos:
             salidas.append({"tipo": "archivo", "ruta": ruta, "nombre": os.path.basename(ruta), "titulo": titulo,
                             "imagen": ruta.endswith(".jpg")})
         out = {"ok": True, "archivos_enviados": [os.path.basename(a) for a, _ in archivos], "escala": f"1:{info['escala']:,}",
-               "partes": {"resumen_ejecutivo": 1 if any(a.endswith("-resumen-ejecutivo.pdf") for a, _ in archivos) else 0,
+               "partes": {"carpeta_prefactibilidad_pdf": any(a.endswith("-carpeta-prefactibilidad.pdf") for a, _ in archivos),
                           "carpeta_tecnica": len(tecnica), "carpeta_comercial": len(comercial)},
                "hojas": info["hojas"], "nota": "Los archivos se envían automáticamente después de tu mensaje."}
         if avisos:

@@ -171,8 +171,9 @@ def test_flujo_dos_terrenos_unidos(tmp_path):
     assert estados["Área verde total"] == "cumple" and estados["Protección de quebrada (sur)"] == "cumple"
 
     salidas = ag.atender(s, "lamina")
-    pdf = next(o["ruta"] for o in salidas if o.get("nombre", "").endswith(".pdf") and "resumen" not in o["nombre"])
-    texto = PdfReader(pdf).pages[1].extract_text()
+    pdf = next(o["ruta"] for o in salidas if o.get("nombre", "").endswith("carpeta-prefactibilidad.pdf"))
+    # la lámina va dentro de la carpeta, en su tamaño tabloide
+    texto = " ".join(p.extract_text() for p in PdfReader(pdf).pages if round(float(p.mediabox.width)) == 1224)
     assert "CUADRO DE CUMPLIMIENTO" in texto and "RLUC 50 a)" in texto and "ÁREA VERDE ECOLÓGICA" in texto
 
 

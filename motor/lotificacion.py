@@ -208,6 +208,33 @@ def franja_de_proteccion(anillo, lado: str, ancho: float) -> Polygon | None:
     return _mayor(franja) if franja.geom_type != "Polygon" else franja
 
 
+def cauce_quebrada(anillo, ficha: dict | None, separacion: float = 7.0):
+    """Línea del cauce de la quebrada: el lindero del lado de la quebrada corrido `separacion` m hacia afuera.
+    None si la ficha no dice de qué lado está."""
+    from shapely.geometry import LineString
+    from shapely.ops import linemerge
+
+    lado = next((str(q.get("lado", "")).lower() for q in (ficha or {}).get("quebradas") or []
+                 if str(q.get("lado", "")).lower() in LADOS), None)
+    if not lado:
+        return None
+    poly = Polygon(anillo).buffer(0)
+    bordes = _bordes_hacia(poly, lado, tolerancia=50)
+    if not bordes:
+        return None
+    orilla = linemerge(unary_union([LineString(b) for b in bordes]))
+    mejor = None
+    for g in getattr(orilla, "geoms", [orilla]):
+        try:
+            o1, o2 = g.offset_curve(separacion), g.offset_curve(-separacion)
+        except Exception:  # noqa: BLE001
+            continue
+        o = o1 if poly.distance(o1) > poly.distance(o2) else o2
+        if mejor is None or o.length > mejor.length:
+            mejor = o
+    return mejor
+
+
 def proteccion_de_quebrada(protecciones: list, anillo, ficha: dict | None) -> Polygon | None:
     """De las zonas no lotificadas, la que es la franja de la quebrada: la que más lindero comparte con el lado de la
     quebrada (las demás son caídas fuertes). Sin lado conocido, la más grande."""

@@ -422,8 +422,10 @@ def _pads(lot, malla):
         return None
 
 
-def calco_aereo(t: Terreno, lot: Resultado, malla: Malla, lado_largo: int = LADO_LARGO, casas: bool = True) -> Dibujo:
-    escena = modelo3d.construir(t, malla, lot, margen=10.0, casas=casas, plataformas=_pads(lot, malla))
+def calco_aereo(t: Terreno, lot: Resultado, malla: Malla, lado_largo: int = LADO_LARGO, casas: bool = True,
+                ficha: dict | None = None) -> Dibujo:
+    escena = modelo3d.construir(t, malla, lot, margen=10.0, casas=casas, plataformas=_pads(lot, malla),
+                                cauce=_cauce(t, ficha))
     W, H = lado_largo, round(lado_largo * 9 / 16)
     img, pantalla = modelo3d.render_aereo(escena, t, W, H, 40.0, malla, lineas=True)
     alt = lambda x, y: float(modelo3d._alturas(malla, [x], [y])[0])  # noqa: E731
@@ -479,8 +481,38 @@ def camaras(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None = None)
     return out
 
 
-def calco_vista(t: Terreno, lot: Resultado, malla: Malla, camara: dict, lado_largo: int = LADO_LARGO) -> Dibujo:
-    escena = modelo3d.construir(t, malla, lot, margen=48.0, plataformas=_pads(lot, malla))
+def _cauce(t, ficha):
+    try:
+        from .lotificacion import cauce_quebrada
+
+        return cauce_quebrada(t.puntos, ficha)
+    except Exception:  # noqa: BLE001
+        log.exception("cauce")
+        return None
+
+
+def guia_quebrada(dib: Dibujo, t: Terreno, ficha: dict | None, primer_plano: bool = False) -> str:
+    """Dónde queda la quebrada en la imagen (sale del lado que dijo el usuario), para que la IA la pinte ahí."""
+    cauce = _cauce(t, ficha)
+    if cauce is None:
+        return ""
+    from .altimetria import _zona_imagen
+
+    pts = [dib.a_px(*q) for q in Polygon(t.puntos).exterior.coords]
+    caja = (min(p[0] for p in pts), min(p[1] for p in pts), max(p[0] for p in pts), max(p[1] for p in pts))
+    marcas = [_zona_imagen(*dib.a_px(*cauce.interpolate(f, normalized=True).coords[0]), caja) for f in (0.2, 0.5, 0.8)]
+    donde = ", ".join(dict.fromkeys(marcas))
+    txt = (f" RAVINE: the protected ravine with its creek (the blue strip in the model) runs outside the lots along the "
+           f"{donde} of the property; keep it exactly there, as a deep forested ravine with rocks and running water.")
+    if primer_plano:
+        txt += (" In this view it must be clearly visible in the FOREGROUND, across the bottom of the image and "
+                "continuing up the left side, never behind the houses.")
+    return txt
+
+
+def calco_vista(t: Terreno, lot: Resultado, malla: Malla, camara: dict, lado_largo: int = LADO_LARGO,
+                ficha: dict | None = None) -> Dibujo:
+    escena = modelo3d.construir(t, malla, lot, margen=48.0, plataformas=_pads(lot, malla), cauce=_cauce(t, ficha))
     W, H = lado_largo, round(lado_largo * 9 / 16)
     img, pantalla = modelo3d.render_aereo(escena, t, W, H, 40.0, malla, lineas=True, camara=camara)
     alt = lambda x, y: float(modelo3d._alturas(malla, [x], [y])[0])  # noqa: E731
@@ -532,7 +564,8 @@ INSTRUCCION_PORTON = (
     "You are given a simple 3D massing model of a small gated country-house (quinta) subdivision on a hillside in El "
     "Salvador, seen from a low drone just above the entrance gate, looking along the single access road towards the "
     "round turnaround at the end. Turn it into a premium, photorealistic real-estate marketing photo. Keep the same "
-    "camera, the road and its direction, the turnaround, the number of houses on each side and their places: each "
+    "camera, the single STRAIGHT road (no curves) and its direction, the turnaround, the number of houses on each side "
+    "and their places: each "
     "house sits right next to the road on its own flat terrace at road level, with a short driveway, and its garden "
     "behind it following the natural slope; between terraces there are grassy embankments and low stone retaining "
     "walls. Improve everything else: elegant gate with stone pillars and a small guard house at the entrance, "
@@ -543,9 +576,10 @@ INSTRUCCION_QUEBRADA = (
     "You are given a simple 3D massing model of a small country-house (quinta) subdivision on a hillside in El "
     "Salvador, seen from a low drone over the protected ravine at the lower side of the land, looking up the slope at "
     "the project. Turn it into a premium, photorealistic real-estate marketing photo. Keep the same camera and "
-    "framing, the single road with its round turnaround, the number of houses and their places on their stepped "
-    "terraces, and the slope. In the foreground keep the protected ravine as dense tropical forest with a small rocky "
-    "creek and a walking path with benches in the green area next to it. Warm golden-hour light, soft haze in the "
+    "framing, the single STRAIGHT road (no curves, no extra roads) with its round turnaround, the exact number of houses "
+    "and their places on their stepped terraces, and the slope. The protected ravine is the main foreground element: a "
+    "deep ravine with steep forested banks, rocks and a creek with running water, and a walking path with benches in "
+    "the green area between the ravine and the lots. Warm golden-hour light, soft haze in the "
     "background hills. Do NOT add other streets, lots or houses. Do not write any text, letters, numbers, logos or "
     "watermarks."
 )
@@ -1185,10 +1219,10 @@ def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | 
             cams = camaras(t, lot, malla, ficha)
         except Exception:  # noqa: BLE001
             log.exception("cámaras")
-    for vista, fn in (("ambiente", (lambda: calco_aereo(t, lot, malla)) if malla is not None else None),
-                      ("porton", (lambda: calco_vista(t, lot, malla, cams["porton"])) if "porton" in cams else None),
-                      ("quebrada", (lambda: calco_vista(t, lot, malla, cams["quebrada"])) if "quebrada" in cams else None),
-                      ("limpios", (lambda: calco_aereo(t, lot, malla, casas=False)) if malla is not None else None),
+    for vista, fn in (("ambiente", (lambda: calco_aereo(t, lot, malla, ficha=ficha)) if malla is not None else None),
+                      ("porton", (lambda: calco_vista(t, lot, malla, cams["porton"], ficha=ficha)) if "porton" in cams else None),
+                      ("quebrada", (lambda: calco_vista(t, lot, malla, cams["quebrada"], ficha=ficha)) if "quebrada" in cams else None),
+                      ("limpios", (lambda: calco_aereo(t, lot, malla, casas=False, ficha=ficha)) if malla is not None else None),
                       ("planta", lambda: calco_planta(t, lot, malla, ficha)),
                       ("tecnica", lambda: None),
                       ("altimetria", (lambda: None) if malla is not None else None),
@@ -1212,12 +1246,13 @@ def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | 
                 try:
                     from . import altimetria as _alt
 
+                    ins_ += guia_ambiente(dib_v, lot) + guia_quebrada(dib_v, t, ficha, primer_plano=(v_ == "quebrada"))
                     ins_ += _alt.guia_render(malla, t.puntos, dib_v.a_px, *dib_v.imagen.size)
                 except Exception:  # noqa: BLE001
                     log.exception("guía de relieve %s", v_)
                 futuros[v_] = ex.submit(pintar, dib_v, pintor, ins_, 1, False)
         if "ambiente" in calcos:
-            ins = INSTRUCCION_AMBIENTE + guia_ambiente(calcos["ambiente"], lot)
+            ins = INSTRUCCION_AMBIENTE + guia_ambiente(calcos["ambiente"], lot) + guia_quebrada(calcos["ambiente"], t, ficha)
             try:  # el relieve dicho en términos de la imagen, para que la IA no aplane el terreno
                 from . import altimetria
 

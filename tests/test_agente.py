@@ -98,18 +98,19 @@ def test_flujo_completo(tmp_path, malla_local):
     assert 26 <= n_lotes <= 36
     out = ag.atender(s, "mándame la lámina")
     archivos = [o for o in out if o["tipo"] == "archivo"]
-    # tres partes: resumen ejecutivo, carpeta técnica (planos y archivos de CAD) y carpeta comercial (imágenes)
-    assert [a["nombre"] for a in archivos] == ["lotificacion-chiltiupan-resumen-ejecutivo.pdf",
-                                                "lotificacion-chiltiupan-presentacion-tecnica.jpg",
-                                                "lotificacion-chiltiupan-presentacion-altimetria.jpg",
-                                                "lotificacion-chiltiupan.pdf", "lotificacion-chiltiupan.kml",
-                                                "lotificacion-chiltiupan.dxf", "lotificacion-chiltiupan-3d.dxf",
+    # primero la carpeta de prefactibilidad (un PDF con todo), después las vistas y los archivos de CAD
+    assert [a["nombre"] for a in archivos] == ["lotificacion-chiltiupan-carpeta-prefactibilidad.pdf",
                                                 "lotificacion-chiltiupan-presentacion-aerea.jpg",
-                                                "lotificacion-chiltiupan-presentacion-planta.jpg"]
-    assert [a["titulo"].split(" · ")[0] for a in archivos][1:] == ["Carpeta técnica"] * 6 + ["Carpeta comercial"] * 2
-    assert [a["imagen"] for a in archivos] == [False, True, True, False, False, False, False, True, True]
-    texto_res = " ".join(p.extract_text() for p in PdfReader(archivos[0]["ruta"]).pages)
-    assert "Cuadro general de áreas" in texto_res and "Siguientes pasos" in texto_res
+                                                "lotificacion-chiltiupan-presentacion-planta.jpg",
+                                                "lotificacion-chiltiupan.kml", "lotificacion-chiltiupan.dxf",
+                                                "lotificacion-chiltiupan-3d.dxf"]
+    assert [a["imagen"] for a in archivos] == [False, True, True, False, False, False]
+    lector = PdfReader(archivos[0]["ruta"])
+    texto_res = " ".join(p.extract_text() for p in lector.pages)
+    assert "CONTENIDO" in texto_res and "Cuadro general de áreas" in texto_res and "Siguientes pasos" in texto_res
+    assert [o.title for o in lector.outline][:3] == ["Portada y contenido", "Resumen ejecutivo", "Carpeta técnica"]
+    # la lámina a escala conserva su tamaño tabloide dentro de la carpeta
+    assert any(round(float(p.mediabox.width)) == 1224 for p in lector.pages)
     assert all(os.path.getsize(a["ruta"]) > 1000 for a in archivos)
 
     # El estado que ve el modelo resume lo hecho, y el historial guarda solo texto.
@@ -138,7 +139,7 @@ def test_modo_sin_ia_flujo(tmp_path, malla_local):
 
     assert int(re.search(r"(\d+) lotes", ag.atender(s, "lotes")[0]["texto"]).group(1)) >= 26
     out = ag.atender(s, "lámina")
-    assert sum(o["tipo"] == "archivo" for o in out) == 9  # resumen + 6 técnicos + 2 comerciales
+    assert sum(o["tipo"] == "archivo" for o in out) == 6  # carpeta PDF + 2 vistas + KML + 2 DXF
 
 
 def test_modo_sin_ia_pide_texto_si_mandan_foto(tmp_path):
