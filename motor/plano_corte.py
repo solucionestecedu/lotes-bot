@@ -150,6 +150,9 @@ def generar_corte(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None, 
             d.text((dx0 - 8, y), f"{zz:g}", font=fuente(11), fill=GRIS, anchor="rm")
             zz += paso_z
         d.text((dx0 - 8, dy0 - 30), "cota (m)", font=fuente(11), fill=GRIS, anchor="rm")
+        # tierra bajo el perfil propuesto (primero, para que el relleno quede encima y se vea)
+        poly_suelo = [P(ss[i], prop_z[i]) for i in range(n)] + [P(ss[-1], zmin - 2), P(ss[0], zmin - 2)]
+        d.polygon(poly_suelo, fill=(246, 241, 232))
         # corte y relleno
         for i in range(n - 1):
             a, b = nat[i], prop_z[i]
@@ -160,9 +163,6 @@ def generar_corte(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None, 
             x1_, _ = P(ss[i + 1], 0)
             ya, yb = P(ss[i], a)[1], P(ss[i], b)[1]
             d.rectangle([x0_, min(ya, yb), x1_ + 0.6, max(ya, yb)], fill=col + (255,))
-        # tierra bajo el perfil propuesto
-        poly_suelo = [P(ss[i], prop_z[i]) for i in range(n)] + [P(ss[-1], zmin - 2), P(ss[0], zmin - 2)]
-        d.polygon(poly_suelo, fill=(246, 241, 232))
         # línea propuesta y natural
         d.line([P(ss[i], prop_z[i]) for i in range(n)], fill=NEGRO, width=3)
         _discontinua(d, [P(ss[i], nat[i]) for i in range(n)], NATURAL, 2, 9, 5)
