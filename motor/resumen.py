@@ -345,6 +345,39 @@ def generar_resumen(ruta: str, t: Terreno, lot: Resultado, malla, ficha: dict | 
         story += [Spacer(1, 3), P(f"Fuente: {FUENTES.get(malla.fuente, malla.fuente)}. Sirve para anteproyecto; las caídas "
                                   "cortas se suavizan. El levantamiento topográfico con altimetría lo sustituye.", "pg")]
 
+        # -------------------------------------------------------------- terracería: taludes o muros
+        cmp_ = altimetria.comparar_terraceria(lot, malla) if lot.lotes else None
+        if cmp_:
+            story.append(P(f"{num}. Terracería: taludes o muros de contención", "h"))
+            num += 1
+            ta, mu = cmp_["taludes"], cmp_["muros"]
+            gana = mu["area_plana"] - ta["area_plana"]
+            alto = mu["lotes_muro_alto"]
+            story.append(P(
+                f"Dos maneras de acomodar las casas en la ladera. Con taludes, cada casa va sobre una plataforma a la cota "
+                f"de la calle y el resto del lote se queda con su caída. Con muros de contención, cada lote se escalona en "
+                f"terrazas que siguen el terreno (la de la casa pegada a la calle, a no más de 1.5 m de su nivel) y se "
+                f"aprovecha casi todo el lote: {_n(gana, 0)} m² planos más, a cambio de unos {_n(mu['muro_m2'], 0)} m² de "
+                f"cara de muro (≈ {_n(mu['muro_largo'], 0)} m de largo, hasta {mu['muro_max']:.1f} m de alto)."
+                + (f" Los muros de más de {altimetria.MURO_ESTRUCTURAL:g} m (lote{'s' if len(alto) > 1 else ''} "
+                   f"{', '.join(str(i) for i in alto)}) piden diseño estructural." if alto else "")))
+            story.append(Spacer(1, 3))
+            filas = [["", "Con taludes", "Con muros"],
+                     ["Área plana para usar", f"{_n(ta['area_plana'], 0)} m²", f"{_n(mu['area_plana'], 0)} m²"],
+                     ["Corte / relleno", f"{_n(ta['corte_m3'], 0)} / {_n(ta['relleno_m3'], 0)} m³",
+                      f"{_n(mu['corte_m3'], 0)} / {_n(mu['relleno_m3'], 0)} m³"],
+                     ["Terreno ocupado por taludes", f"≈ {_n(ta['talud_m2'], 0)} m²", "—"],
+                     ["Muros de contención", "—", f"{_n(mu['muro_m2'], 0)} m² · máx. {mu['muro_max']:.1f} m"],
+                     [f"Muro de más de {altimetria.MURO_ESTRUCTURAL:g} m", "—", f"{_n(mu['muro_estructural_m'], 0)} m"]]
+            tt = Table([[P(c, "cb" if (i == 0 or j == 0) else "c") for j, c in enumerate(f)] for i, f in enumerate(filas)],
+                       colWidths=[W * 0.36, W * 0.27, W * 0.27])
+            tt.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, 0), 0.8, TINTA), ("LINEBELOW", (0, 1), (-1, -1), 0.3, LINEA),
+                                    ("ALIGN", (1, 1), (-1, -1), "RIGHT")]))
+            story.append(tt)
+            story += [Spacer(1, 3), P("Volúmenes y muros aproximados con el relieve satelital; el corte transversal de la "
+                                      "carpeta técnica muestra las terrazas y los muros. El costo depende del tipo de muro "
+                                      "(piedra, gaviones o concreto): se cotiza con el diseño final.", "pg")]
+
     # ------------------------------------------------------------------ cumplimiento
     if cumplimiento:
         story.append(P(f"{num}. Cumplimiento de normas (revisión preliminar)", "h"))

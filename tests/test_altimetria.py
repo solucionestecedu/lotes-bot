@@ -150,3 +150,71 @@ def test_corte_transversal_con_cotas():
                                   m, [], lotes_por_lado=(2, 3))
     img, pads = generar_corte(Terreno(nombres=[f"V{i}" for i in range(4)], puntos=RECT), lot, m, {}, "Prueba")
     assert img.size == (2048, 1448) and pads
+
+
+def _ladera_fuerte(anillo, pend=0.25):
+    """Ladera de 25 % que sube hacia el norte (de lado a lado de la calle central)."""
+    x0, y0, dx, nx, ny = malla_para(anillo, 5.0, 30.0)
+    z = np.array([[500 + pend * (y0 + j * dx) for _ in range(nx)] for j in range(ny)], dtype=float)
+    return Malla(x0, y0, dx, nx, ny, z, "archivo")
+
+
+def _lot_ladera():
+    m = _ladera_fuerte(RECT)
+    lot = lotificar_calle_central(RECT, Parametros.de_dict(dict(frente=20, fondo=40, area_minima=700, lado_acceso="oeste")),
+                                  m, [], lotes_por_lado=(3, 3))
+    return m, lot
+
+
+def test_terrazas_siguen_el_terreno_con_muros():
+    from shapely.ops import unary_union
+
+    m, lot = _lot_ladera()
+    terr = altimetria.terrazas(lot, m)
+    assert len(terr) == len(lot.lotes)
+    calles = unary_union(lot.calles)
+    for p in terr:
+        # la casa no se entierra ni se sube: su terraza queda a no más de 1.5 m de la calle (rampa del carro ≤ 15 %)
+        assert abs(p["z"] - p["z_calle"]) <= altimetria.RAMPA_MAX + 0.01
+        assert p["poly"].distance(calles) < 1.0
+        assert p["casa"].buffer(0.5).within(p["poly"].buffer(1.0))
+        # casi todo el lote queda plano, en terrazas, y los cambios de nivel son muros con su altura
+        assert p["area_plana"] >= 0.9 * next(l["poly"].area for l in lot.lotes if l["id"] == p["id"])
+        assert all(mu["h"] >= 0.3 for mu in p["muros"])
+    # en una ladera de 25 % hay terrazas escalonadas y muros
+    assert any(len(p["terrazas"]) > 1 for p in terr)
+    assert sum(p["muro_m2"] for p in terr) > 0
+
+
+def test_muros_ganan_area_plana_frente_a_taludes():
+    m, lot = _lot_ladera()
+    c = altimetria.comparar_terraceria(lot, m)
+    assert c["muros"]["area_plana"] > c["taludes"]["area_plana"]
+    assert c["taludes"]["talud_m2"] > 0 and c["muros"]["muro_m2"] > 0
+
+
+def test_maqueta_con_terrazas_y_muros_de_contencion():
+    from motor import modelo3d
+    from motor.terreno import Terreno
+
+    m, lot = _lot_ladera()
+    t = Terreno(nombres=[f"V{i}" for i in range(4)], puntos=RECT)
+    escena = modelo3d.construir(t, m, lot, margen=10, plataformas=altimetria.terrazas(lot, m))
+    clases = {c for c, tris in escena.triangulos.items() if tris}
+    assert {"plataforma", "contencion"} <= clases
+    assert "talud" not in clases
+
+
+def test_corte_con_muros_y_resumen_compara(tmp_path):
+    from motor import resumen
+    from motor.plano_corte import generar_corte
+    from motor.terreno import Terreno
+
+    m, lot = _lot_ladera()
+    t = Terreno(nombres=[f"V{i}" for i in range(4)], puntos=RECT)
+    img, pads = generar_corte(t, lot, m, {}, "Prueba")
+    assert pads and all("muros" in p for p in pads)
+    altimetria.enriquecer(lot, m)
+    r = resumen.generar_resumen(str(tmp_path / "r.pdf"), t, lot, m, {}, "Prueba", None, "", None, None, None)
+    texto = " ".join(pg.extract_text() for pg in PdfReader(r["ruta"]).pages)
+    assert "Con muros" in texto and "Con taludes" in texto

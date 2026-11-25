@@ -280,9 +280,13 @@ FLUJO:
       relieve, calle y servicios, relieve, cumplimiento, opciones legales a validar con notario y siguientes pasos.
    b) CARPETA TÉCNICA: plano técnico (planimetría con medidas), plano altimétrico (pendientes, curvas de nivel, perfil
       de la calle y relieve por lote), lámina PDF con el cuadro de cumplimiento, DXF 2D y 3D y KML.
-   b2) La carpeta técnica también trae el CORTE TRANSVERSAL con la terracería: cada casa pegada a la calle sobre una
-      plataforma a la cota de la calle (el carro entra a nivel), jardín al fondo con su caída natural, y el corte y el
-      relleno de cada lote en m³ (aproximados con relieve satelital).
+   b2) La carpeta técnica también trae el CORTE TRANSVERSAL con la terracería: cada lote escalonado en terrazas que
+      siguen el terreno, la de la casa pegada a la calle y a no más de 1.5 m de su nivel (el carro entra por una rampa
+      de ≤ 15 %), y los cambios de nivel resueltos con MUROS DE CONTENCIÓN (altura de cada muro; los de más de 3 m
+      piden diseño estructural), con corte, relleno y m² de muro por lote (aproximados con relieve satelital). El
+      resumen compara las dos maneras: taludes (plataforma y el resto del lote con su caída) contra muros (se
+      aprovecha casi todo el lote a cambio de los m² de muro). Si preguntan cuál conviene, explica ese cambio; el
+      costo de los muros se cotiza con el diseño final.
    c) CARPETA COMERCIAL (pintadas con IA sobre el 3D del motor, ilustrativas y no a escala, respetando hacia dónde baja
       el terreno): vista aérea de ambiente, vista desde el portón, vista desde la quebrada, lotes listos con su
       terracería (sin casas), y el plano de presentación con medidas.

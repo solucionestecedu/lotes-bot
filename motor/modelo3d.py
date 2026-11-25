@@ -34,6 +34,7 @@ CLASES = {
     "base": ("3D_BASE", 33, (176, 140, 104)),
     "plataforma": ("3D_PLATAFORMAS", 41, (214, 200, 168)),
     "talud": ("3D_TALUDES", 32, (150, 128, 96)),
+    "contencion": ("3D_MUROS_CONTENCION", 8, (128, 122, 112)),
     "agua": ("3D_QUEBRADA", 5, (64, 124, 186)),
 }
 ID_CLASE = {c: i for i, c in enumerate(CLASES, start=1)}  # para máscaras de clases (0 = cielo)
@@ -223,10 +224,31 @@ def construir(t: Terreno, malla: Malla, lot: Resultado | None = None, margen: fl
             if geoms:
                 u = unary_union(geoms)
                 clase[shapely.contains_xy(u, cx, cy) & dentro] = nombre
+    u_pads = None
+    parcial = np.zeros(cx.shape, dtype=bool)
     if plataformas:
-        u_pads = unary_union([p["poly"] for p in plataformas])
-        dentro &= ~shapely.contains_xy(u_pads, cx, cy)  # el terreno natural se quita donde va una terraza
+        u_pads = unary_union([tz["poly"] for p in plataformas for tz in _niveles(p)]).buffer(0)
+        esq = [shapely.contains_xy(u_pads, gx[a:a + ny - 1, b:b + nx - 1], gy[a:a + ny - 1, b:b + nx - 1])
+               for a in (0, 1) for b in (0, 1)]
+        todo = esq[0] & esq[1] & esq[2] & esq[3]
+        algo = esq[0] | esq[1] | esq[2] | esq[3] | shapely.contains_xy(u_pads, cx, cy)
+        parcial = algo & ~todo & dentro      # celdas del borde: se recortan contra la terraza, sin dejar huecos
+        dentro &= ~algo                       # el terreno natural se quita donde va una terraza
     escena = Escena(paso=paso)
+    for j, i in zip(*[v.tolist() for v in np.nonzero(parcial)]):
+        resto = box(gx[j, i], gy[j, i], gx[j, i + 1], gy[j + 1, i]).difference(u_pads)
+        if resto.is_empty or resto.area < 0.05:
+            continue
+        for pz in getattr(resto, "geoms", [resto]):
+            if pz.geom_type != "Polygon" or pz.area < 0.02:
+                continue
+            tris = shapely.delaunay_triangles(pz)
+            for tri in getattr(tris, "geoms", [tris]):
+                if tri.is_empty or not tri.representative_point().within(pz.buffer(0.01)):
+                    continue
+                pts = list(tri.exterior.coords)[:3]
+                zs = _alturas(malla, [q[0] for q in pts], [q[1] for q in pts])
+                escena.agregar(clase[j, i], tuple((q[0], q[1], float(z)) for q, z in zip(pts, zs)))
     J, I = np.nonzero(dentro)
     for j, i in zip(J.tolist(), I.tolist()):
         p00 = (gx[j, i], gy[j, i], gz[j, i])
@@ -247,8 +269,13 @@ def construir(t: Terreno, malla: Malla, lot: Resultado | None = None, margen: fl
             escena.agregar("base", (a0, b, a))
     escena.lineas["lindero"] = [_sobre_terreno(malla, t.puntos + t.puntos[:1], alza=0.2)]
     pads = {p["id"]: p for p in plataformas or []}
+    todas = [tz for p in pads.values() for tz in _niveles(p)]
     for p in pads.values():
-        _terraza(escena, malla, p, paso)
+        if "terrazas" in p:
+            for tz in p["terrazas"]:
+                _nivel(escena, malla, tz, todas, paso)
+        else:
+            _terraza(escena, malla, p, paso)
     if cauce is not None and cauce.length > 2:  # el agua de la quebrada, para que la IA la ponga donde va
         cinta = cauce.buffer(2.2, cap_style=2).buffer(0)
         tris = shapely.delaunay_triangles(cinta.segmentize(max(1.5, paso)))
@@ -266,6 +293,52 @@ def construir(t: Terreno, malla: Malla, lot: Resultado | None = None, margen: fl
             for l in lot.lotes:
                 _casa(escena, malla, l, calles, lot.angulo, pads.get(l["id"]))
     return escena
+
+
+def _niveles(p: dict) -> list[dict]:
+    """Las superficies planas de un lote: sus terrazas (altimetria.terrazas) o su plataforma (altimetria.plataformas)."""
+    return p.get("terrazas") or [{"poly": p["poly"], "z": p["z"], "uso": "casa"}]
+
+
+def _nivel(escena: Escena, m: Malla, tz: dict, todas: list[dict], paso: float):
+    """Una terraza plana a su cota y sus muros de contención: cara vertical de piedra hasta el terreno natural o hasta
+    la terraza vecina (entre dos terrazas la dibuja la de arriba, para no duplicarla)."""
+    poly = tz["poly"].buffer(0)
+    if poly.is_empty:
+        return
+    z = tz["z"]
+    partes = getattr(poly, "geoms", [poly])
+    for pz in partes:
+        tris = shapely.delaunay_triangles(pz, only_edges=False)
+        for tri in getattr(tris, "geoms", [tris]):
+            if tri.is_empty or not tri.representative_point().within(pz.buffer(0.01)):
+                continue
+            a, b, c = list(tri.exterior.coords)[:3]
+            escena.agregar("plataforma", ((a[0], a[1], z), (b[0], b[1], z), (c[0], c[1], z)))
+        borde = LineString(pz.exterior.coords).segmentize(max(1.0, paso))
+        cs = list(borde.coords)
+        for (x0, y0), (x1, y1) in zip(cs, cs[1:]):
+            mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+            dx, dy = x1 - x0, y1 - y0
+            n = math.hypot(dx, dy) or 1
+            # sonda hacia afuera (probar los dos lados y quedarse con el que cae fuera de esta terraza)
+            nx_, ny_ = -dy / n * 0.6, dx / n * 0.6
+            if pz.contains(Point(mx + nx_, my + ny_)):
+                nx_, ny_ = -nx_, -ny_
+            q = Point(mx + nx_, my + ny_)
+            vecina = next((o for o in todas if o is not tz and o["poly"].contains(q)), None)
+            if vecina is not None:
+                if vecina["z"] >= z - 0.05:
+                    continue
+                g0 = g1 = vecina["z"]
+            else:
+                g0, g1 = (float(v) for v in _alturas(m, [x0, x1], [y0, y1]))
+                if abs(g0 - z) < 0.3 and abs(g1 - z) < 0.3:
+                    continue
+            a, b = (x0, y0, z), (x1, y1, z)
+            A, B = (x0, y0, g0), (x1, y1, g1)
+            escena.agregar("contencion", (a, b, B))
+            escena.agregar("contencion", (a, B, A))
 
 
 def _terraza(escena: Escena, m: Malla, pad: dict, paso: float):

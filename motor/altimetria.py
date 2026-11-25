@@ -298,3 +298,179 @@ def plataformas(lot, malla: Malla, retiro_fondo: float = 3.0, margen_lado: float
                     "corte_max": round(float(max(0.0, dz.max())), 1), "relleno_max": round(float(max(0.0, -dz.min())), 1),
                     "eje": (ux, uy, vx, vy)})
     return out
+
+
+# ------------------------------------------------------------------ terrazas con muros de contención
+RAMPA_MAX = 1.5      # m que puede subir o bajar la terraza de la casa respecto a la calle (rampa lateral de ≤ 15 %)
+ESCALON_JARDIN = 2.5  # desnivel natural máximo dentro de una terraza de jardín antes de partirla en otra
+MURO_ESTRUCTURAL = 3.0  # muros más altos que esto piden diseño estructural
+
+
+def _banda(poly: Polygon, base, vx, vy, s0: float, s1: float, largo: float) -> Polygon:
+    """Parte del lote entre las profundidades s0 y s1 (medidas desde `base` en la dirección v)."""
+    ux, uy = vy, -vx
+    bx, by = base
+    caja = Polygon([(bx + vx * s0 - ux * largo, by + vy * s0 - uy * largo), (bx + vx * s0 + ux * largo, by + vy * s0 + uy * largo),
+                    (bx + vx * s1 + ux * largo, by + vy * s1 + uy * largo), (bx + vx * s1 - ux * largo, by + vy * s1 - uy * largo)])
+    g = poly.intersection(caja)
+    if g.is_empty:
+        return g
+    if g.geom_type != "Polygon":
+        g = max((q for q in getattr(g, "geoms", [g]) if q.geom_type == "Polygon"), key=lambda q: q.area, default=Polygon())
+    return g
+
+
+def terrazas(lot, malla: Malla) -> list[dict]:
+    """Terracería que sigue el terreno, con muros de contención en lugar de taludes (no se pierde terreno en taludes):
+    - terraza de la casa (desde la calle hasta 3 m detrás de la casa, todo el ancho del lote) a la cota que menos tierra
+      mueve, sin alejarse más de 1.5 m de la calle para que el carro entre por una rampa lateral de ≤ 15 %;
+    - el jardín en terrazas escalonadas, cada una a la cota media de su terreno natural;
+    - muros donde dos terrazas o una terraza y el terreno de al lado quedan a distinta altura (a la calle, entre
+      terrazas, entre lotes y en el lindero). Devuelve por lote las terrazas, los muros y las cantidades."""
+    from shapely.ops import nearest_points
+
+    from .modelo3d import huella_casa
+
+    calles = unary_union(lot.calles) if lot.calles else None
+    previo = []
+    for l in lot.lotes:
+        esq = huella_casa(l, calles, lot.angulo)
+        if esq is None:
+            continue
+        (x0, y0), (x1, y1), (x2, y2), (x3, y3) = esq
+        vx, vy = x3 - x0, y3 - y0
+        prof = math.hypot(vx, vy) or 1
+        vx, vy = vx / prof, vy / prof
+        base = ((x0 + x1) / 2, (y0 + y1) / 2)     # frente de la casa
+        casa = Polygon(esq)
+        poly = l["poly"]
+        largo = max(poly.bounds[2] - poly.bounds[0], poly.bounds[3] - poly.bounds[1]) * 2
+        prof_lote = max((q[0] - base[0]) * vx + (q[1] - base[1]) * vy for q in poly.exterior.coords)
+        corte_casa = prof + 3.0
+        t1 = _banda(poly, base, vx, vy, -largo, corte_casa, largo)
+        if t1.is_empty:
+            continue
+        if calles is not None:
+            pc, _ = nearest_points(calles, casa)
+            z_calle = malla.altura(pc.x, pc.y)
+        else:
+            z_calle = float(np.nanmedian(_muestras(malla, t1)[2]))
+        z_nat = float(np.nanmedian(_muestras(malla, t1, n=150)[2]))
+        z1 = round(min(max(z_nat, z_calle - RAMPA_MAX), z_calle + RAMPA_MAX), 2)
+        lista = [{"poly": t1, "z": z1, "uso": "casa"}]
+        # jardín escalonado
+        if prof_lote > corte_casa + 4:
+            resto = _banda(poly, base, vx, vy, corte_casa, prof_lote + 1, largo)
+            if not resto.is_empty and resto.area > 25:
+                zs_r = _muestras(malla, resto, n=150)[2]
+                caida = float(np.nanmax(zs_r) - np.nanmin(zs_r))
+                k = int(min(4, max(1, math.ceil(caida / ESCALON_JARDIN))))
+                paso = (prof_lote + 1 - corte_casa) / k
+                for i in range(k):
+                    b = _banda(poly, base, vx, vy, corte_casa + i * paso, corte_casa + (i + 1) * paso, largo)
+                    if b.is_empty or b.area < 15:
+                        continue
+                    zb = round(float(np.nanmedian(_muestras(malla, b, n=80)[2])), 2)
+                    if abs(zb - lista[-1]["z"]) < 0.3:  # casi al mismo nivel: una sola terraza
+                        lista[-1] = {**lista[-1], "poly": unary_union([lista[-1]["poly"], b]).buffer(0)}
+                    else:
+                        lista.append({"poly": b, "z": zb, "uso": "jardín"})
+        previo.append({"id": l["id"], "casa": casa, "z": z1, "z_calle": round(float(z_calle), 2), "poly": lista[0]["poly"],
+                       "terrazas": lista, "eje": (vy, -vx, vx, vy), "lote": poly})
+    # muros: se recorre el borde de cada terraza y se compara con lo que hay del otro lado
+    todas = [(p["id"], k, tz) for p in previo for k, tz in enumerate(p["terrazas"])]
+
+    def nivel_en(x, y, yo):
+        q = Point(x, y)
+        for i, k, tz in todas:
+            if (i, k) != yo and tz["poly"].buffer(0.05).contains(q):
+                return tz["z"], (i, k)
+        if calles is not None and calles.buffer(0.05).contains(q):
+            return malla.altura(x, y), "calle"
+        return malla.altura(x, y), "terreno"
+
+    for p in previo:
+        muros = []
+        for k, tz in enumerate(p["terrazas"]):
+            g = tz["poly"]
+            borde = LineString(g.exterior.coords) if g.geom_type == "Polygon" else None
+            if borde is None:
+                continue
+            n = max(4, int(borde.length / 1.0))
+            c = g.representative_point()
+            for j in range(n):
+                q0 = borde.interpolate(j / n, normalized=True)
+                q1 = borde.interpolate(min(1.0, (j + 0.5) / n), normalized=True)
+                tx, ty = q1.x - q0.x, q1.y - q0.y
+                tl = math.hypot(tx, ty) or 1
+                nx, ny = ty / tl, -tx / tl
+                if g.contains(Point(q0.x + nx * 0.6, q0.y + ny * 0.6)):
+                    nx, ny = -nx, -ny
+                zo, quien = nivel_en(q0.x + nx * 0.6, q0.y + ny * 0.6, (p["id"], k))
+                if not math.isfinite(zo):
+                    continue
+                h = tz["z"] - zo
+                if abs(h) < 0.3:
+                    continue
+                if isinstance(quien, tuple) and (quien[0], quien[1]) < (p["id"], k):
+                    continue  # el muro entre dos terrazas se cuenta una vez
+                tipo = ("calle" if quien == "calle" else "lindero" if quien == "terreno" else
+                        "entre terrazas" if quien[0] == p["id"] else "entre lotes")
+                muros.append({"x": q0.x, "y": q0.y, "h": round(abs(h), 2), "tipo": tipo, "largo": borde.length / n})
+        xs_all, zs_all = [], []
+        corte = relleno = 0.0
+        cmax = rmax = 0.0
+        for tz in p["terrazas"]:
+            xs, ys, zs, _ = _muestras(malla, tz["poly"], n=150)
+            celda = tz["poly"].area / max(1, len(zs))
+            dz = zs - tz["z"]
+            corte += float(np.sum(np.clip(dz, 0, None)) * celda)
+            relleno += float(np.sum(np.clip(-dz, 0, None)) * celda)
+            cmax = max(cmax, float(dz.max()))
+            rmax = max(rmax, float(-dz.min()))
+        cara = sum(m["h"] * m["largo"] for m in muros)
+        p.update({"muros": muros, "corte_m3": round(corte), "relleno_m3": round(relleno),
+                  "corte_max": round(max(0.0, cmax), 1), "relleno_max": round(max(0.0, rmax), 1),
+                  "area_plana": round(sum(tz["poly"].area for tz in p["terrazas"])),
+                  "muro_m2": round(cara), "muro_max": round(max((m["h"] for m in muros), default=0.0), 1),
+                  "muro_largo": round(sum(m["largo"] for m in muros)),
+                  "muro_estructural_m": round(sum(m["largo"] for m in muros if m["h"] > MURO_ESTRUCTURAL)),
+                  "rampa": round(p["z"] - p["z_calle"], 2)})
+    return previo
+
+
+def comparar_terraceria(lot, malla: Malla) -> dict | None:
+    """Las dos maneras de acomodar las casas en la ladera, para todo el proyecto:
+    - taludes: plataforma de la casa a la cota de la calle y taludes de tierra 1.5:1 hasta el terreno natural
+      (el resto del lote queda con su caída);
+    - muros: terrazas que siguen el terreno con muros de contención (altimetria.terrazas).
+    Da área plana, tierra que se mueve, terreno que se comen los taludes y metros de muro."""
+    try:
+        pads = plataformas(lot, malla)
+        terr = terrazas(lot, malla)
+    except Exception:  # noqa: BLE001
+        return None
+    if not pads or not terr:
+        return None
+    calles = unary_union(lot.calles).buffer(0.5) if lot.calles else None
+    talud_m2 = 0.0
+    for p in pads:  # huella de los taludes: ancho 1.5 × altura en cada metro del borde que no da a la calle
+        borde = LineString(p["poly"].exterior.coords).segmentize(1.0)
+        cs = list(borde.coords)
+        xs = [(a[0] + b[0]) / 2 for a, b in zip(cs, cs[1:])]
+        ys = [(a[1] + b[1]) / 2 for a, b in zip(cs, cs[1:])]
+        zs = [malla.altura(x, y) for x, y in zip(xs, ys)]
+        for (a, b), x, y, z in zip(zip(cs, cs[1:]), xs, ys, zs):
+            if not math.isfinite(z) or (calles is not None and calles.contains(Point(x, y))):
+                continue
+            talud_m2 += 1.5 * abs(p["z"] - float(z)) * math.hypot(b[0] - a[0], b[1] - a[1])
+    area_lotes = sum(l["poly"].area for l in lot.lotes)
+    t = {"area_plana": round(sum(p["poly"].area for p in pads)), "corte_m3": sum(p["corte_m3"] for p in pads),
+         "relleno_m3": sum(p["relleno_m3"] for p in pads), "talud_m2": round(talud_m2),
+         "corte_max": max(p["corte_max"] for p in pads), "relleno_max": max(p["relleno_max"] for p in pads)}
+    m = {"area_plana": sum(p["area_plana"] for p in terr), "corte_m3": sum(p["corte_m3"] for p in terr),
+         "relleno_m3": sum(p["relleno_m3"] for p in terr), "muro_m2": sum(p["muro_m2"] for p in terr),
+         "muro_largo": sum(p["muro_largo"] for p in terr), "muro_max": max(p["muro_max"] for p in terr),
+         "muro_estructural_m": sum(p["muro_estructural_m"] for p in terr),
+         "lotes_muro_alto": [p["id"] for p in terr if p["muro_max"] > MURO_ESTRUCTURAL]}
+    return {"area_lotes": round(area_lotes), "taludes": t, "muros": m}

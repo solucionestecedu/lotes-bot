@@ -413,12 +413,13 @@ def _arbol(d: ImageDraw.ImageDraw, q, rr, rng):
 
 # --------------------------------------------------------------------------------------------- aérea
 def _pads(lot, malla):
+    """Terracería del modelo 3D: terrazas que siguen el terreno con muros de contención (como el corte)."""
     try:
-        from .altimetria import plataformas
+        from .altimetria import terrazas
 
-        return plataformas(lot, malla)
+        return terrazas(lot, malla)
     except Exception:  # noqa: BLE001
-        log.exception("plataformas")
+        log.exception("terrazas")
         return None
 
 
@@ -553,7 +554,8 @@ INSTRUCCION_AMBIENTE = (
     "ending in its round turnaround, the same number of houses in roughly the same places, the lot boundaries, and "
     "the protected ravine forest along the creek. You may freely improve everything else: varied contemporary one- "
     "and two-storey tropical houses with large windows and terraces, a swimming pool behind each house, lush "
-    "landscaped gardens with palms and mature tropical trees, a small gatehouse at the entrance, warm golden-hour "
+    "landscaped gardens with palms and mature tropical trees stepping down the slope in terraces held by grey stone "
+    "retaining walls where the model shows grey vertical faces, a small gatehouse at the entrance, warm golden-hour "
     "sunlight with long soft shadows, rolling green hills and a hazy sky in the background. Do NOT add other streets, "
     "lots or houses. Do not write any text, letters, numbers, labels, logos or watermarks."
 )
@@ -566,9 +568,9 @@ INSTRUCCION_PORTON = (
     "round turnaround at the end. Turn it into a premium, photorealistic real-estate marketing photo. Keep the same "
     "camera, the single STRAIGHT road (no curves) and its direction, the turnaround, the number of houses on each side "
     "and their places: each "
-    "house sits right next to the road on its own flat terrace at road level, with a short driveway, and its garden "
-    "behind it following the natural slope; between terraces there are grassy embankments and low stone retaining "
-    "walls. Improve everything else: elegant gate with stone pillars and a small guard house at the entrance, "
+    "house sits right next to the road on its own flat terrace close to road level, with a short driveway, and its "
+    "garden behind it in terraces that step down with the slope; the level changes are held by grey stone retaining "
+    "walls (shown as grey vertical faces in the model), not by earth embankments. Improve everything else: elegant gate with stone pillars and a small guard house at the entrance, "
     "contemporary tropical houses, palms and mature trees, warm late-afternoon light. Do NOT add other streets, lots "
     "or houses. Do not write any text, letters, numbers, signs with text, logos or watermarks."
 )
@@ -589,9 +591,10 @@ INSTRUCCION_LIMPIOS = (
     "You are given a simple 3D massing model, seen from the air, of a small country-house (quinta) subdivision on a "
     "hillside in El Salvador right after the earthworks and before any house is built. Turn it into a photorealistic "
     "aerial photo of the finished land development: the single paved access road with curbs ending in its round "
-    "turnaround, and on each lot a flat graded terrace pad at road level (fresh compacted earth or young grass) next "
-    "to the road, with neat grassy embankments and a few low stone retaining walls between terraces, and the rest of "
-    "each lot as natural sloping grass. NO houses, no buildings, no pools: only the prepared lots, the road, the "
+    "turnaround, and on each lot flat graded terraces that step down with the slope (fresh compacted earth or young "
+    "grass): the first one next to the road, close to road level, the others behind it. The level changes between "
+    "terraces, along the road and at the lot edges are held by grey stone retaining walls (gaviones / mampostería "
+    "de piedra), where the model shows them as grey vertical faces; there are no long earth embankments. NO houses, no buildings, no pools: only the prepared lots, the road, the "
     "entrance gate, young trees along the road and the protected ravine forest. Keep the same camera, layout, number "
     "of lots and slope. Do not write any text, letters, numbers, logos or watermarks."
 )

@@ -66,7 +66,7 @@ def generar_corte(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None, 
     img = Image.new("RGB", (W, H), (255, 255, 255))
     d = ImageDraw.Draw(img, "RGBA")
     prop = Polygon(t.puntos).buffer(0)
-    pads = altimetria.plataformas(lot, malla)
+    pads = altimetria.terrazas(lot, malla)  # terrazas que siguen el terreno, con muros de contención
     linea = _linea_corte(lot, pads, prop)
 
     def fuente(tam, negrita=False):
@@ -88,13 +88,17 @@ def generar_corte(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None, 
         ent, ret = lot.stats.get("entrada_calle"), lot.stats.get("retorno_centro")
         eje_c = LineString([ent, ret]) if ent and ret else None
         info_pads = []
+        terr = []
         for p in pads:
-            dentro = np.array([p["poly"].contains(q) for q in pts])
-            if dentro.any():
-                prop_z[dentro] = p["z"]
-                fijo |= dentro
-                idx = np.nonzero(dentro)[0]
-                info_pads.append((p, ss[idx[0]], ss[idx[-1]]))
+            for k_, tz in enumerate(p["terrazas"]):
+                dentro = np.array([tz["poly"].contains(q) for q in pts])
+                if dentro.any():
+                    prop_z[dentro] = tz["z"]
+                    fijo |= dentro
+                    idx = np.nonzero(dentro)[0]
+                    terr.append((p, tz, ss[idx[0]], ss[idx[-1]]))
+                    if k_ == 0:
+                        info_pads.append((p, ss[idx[0]], ss[idx[-1]]))
         if calles is not None:
             en_calle = np.array([calles.contains(q) for q in pts])
             if en_calle.any() and eje_c is not None:
@@ -102,28 +106,6 @@ def generar_corte(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None, 
                 zc = malla.altura(pc.x, pc.y) if not pc.is_empty and pc.geom_type == "Point" else float(np.nanmean(nat[en_calle]))
                 prop_z[en_calle] = zc
                 fijo |= en_calle
-        # taludes 1.5:1 desde cada borde fijo hasta encontrar el terreno natural
-        for direc in (1, -1):
-            rango = range(n) if direc == 1 else range(n - 1, -1, -1)
-            ultimo = None
-            for i in rango:
-                if fijo[i]:
-                    ultimo = i
-                    continue
-                if ultimo is None:
-                    continue
-                dist = abs(ss[i] - ss[ultimo])
-                z0 = prop_z[ultimo] if fijo[ultimo] else None
-                if z0 is None:
-                    continue
-                dz = nat[i] - z0
-                limite = dist / TALUD
-                if abs(dz) <= limite:
-                    ultimo = None
-                    continue
-                cand = z0 + math.copysign(limite, dz)
-                if direc == 1 or abs(cand - nat[i]) < abs(prop_z[i] - nat[i]):
-                    prop_z[i] = cand
         zmin = float(np.nanmin(np.minimum(nat, prop_z)))
         zreal = float(np.nanmax(np.maximum(nat, prop_z)))
         zmax = zreal + 5.0
@@ -165,6 +147,16 @@ def generar_corte(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None, 
             d.rectangle([x0_, min(ya, yb), x1_ + 0.6, max(ya, yb)], fill=col + (255,))
         # línea propuesta y natural
         d.line([P(ss[i], prop_z[i]) for i in range(n)], fill=NEGRO, width=3)
+        # muros de contención: donde el perfil terminado salta de nivel (entre terrazas, a la calle o al terreno)
+        muros_c = []
+        for i in range(n - 1):
+            a_, b_ = prop_z[i], prop_z[i + 1]
+            if abs(a_ - b_) >= 0.3:
+                (mx, ya_), (_, yb_) = P(ss[i], a_), P(ss[i], b_)
+                d.rectangle([mx - 3, min(ya_, yb_), mx + 3, max(ya_, yb_)], fill=(110, 104, 96), outline=NEGRO)
+                muros_c.append((mx, min(ya_, yb_), abs(a_ - b_)))
+        for mx, ytop, h in muros_c:
+            d.text((mx, ytop - 6), f"muro {h:.1f} m", font=fuente(10.5, True), fill=(90, 84, 76), anchor="ms")
         _discontinua(d, [P(ss[i], nat[i]) for i in range(n)], NATURAL, 2, 9, 5)
         # calle
         if calles is not None and en_calle.any():
@@ -195,7 +187,7 @@ def generar_corte(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None, 
                 for k_ in range(1, 3):
                     wx = hx0 + (hx1 - hx0) * k_ / 3
                     d.rectangle([wx - 8, hy0 - alto * 0.7, wx + 8, hy0 - alto * 0.25], fill=(190, 214, 230), outline=GRIS)
-            d.text(((xa + xb) / 2, ya + 16), f"plataforma {p['z']:.2f}", font=fuente(11.5, True), fill=NEGRO, anchor="mt")
+            d.text(((xa + xb) / 2, ya + 16), f"terraza casa {p['z']:.2f}", font=fuente(11.5, True), fill=NEGRO, anchor="mt")
             dz_txt = []
             if p["corte_max"] >= 0.3:
                 dz_txt.append(f"corte hasta {p['corte_max']:.1f} m")
@@ -204,6 +196,11 @@ def generar_corte(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None, 
             if dz_txt:
                 d.text(((xa + xb) / 2, ya + 32), " · ".join(dz_txt), font=fuente(10.5), fill=TINTA, anchor="mt")
             d.text(((xa + xb) / 2, y_rot), f"LOTE {p['id']}", font=fuente(16, True), fill=NEGRO, anchor="ms")
+        for p, tz, sa, sb in terr:  # terrazas de jardín
+            if tz["uso"] == "casa":
+                continue
+            (xa, ya), (xb, _) = P(sa, tz["z"]), P(sb, tz["z"])
+            d.text(((xa + xb) / 2, ya + 14), f"jardín {tz['z']:.2f}", font=fuente(10.5), fill=TINTA, anchor="mt")
         # linderos que cruza el corte (lotes y terreno)
         for l in lot.lotes:
             g = linea.intersection(l["poly"].boundary)
@@ -276,7 +273,10 @@ def generar_corte(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None, 
         c = l["poly"].representative_point()
         d.text(K(c.x, c.y), str(l["id"]), font=fuente(11, True), fill=TINTA, anchor="mm")
     for p in pads:
-        d.polygon([K(*q) for q in p["poly"].exterior.coords], fill=(214, 186, 150, 150))
+        for tz in p["terrazas"]:
+            if tz["poly"].geom_type == "Polygon":
+                d.polygon([K(*q) for q in tz["poly"].exterior.coords],
+                          fill=(214, 186, 150, 170) if tz["uso"] == "casa" else (196, 214, 170, 150))
     d.line([K(*q) for q in prop.exterior.coords], fill=NEGRO, width=2)
     if linea is not None:
         (la, lb) = linea.coords[0], linea.coords[-1]
@@ -288,33 +288,39 @@ def generar_corte(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None, 
 
     # cuadro de terracería
     y += 12
-    d.text((X0, y), "TERRACERÍA POR LOTE (plataforma de la casa)", font=fuente(13, True), fill=NEGRO, anchor="la")
+    d.text((X0, y), "TERRAZAS Y MUROS POR LOTE", font=fuente(13, True), fill=NEGRO, anchor="la")
     y += 22
-    cols = [("LOTE", X0, "la"), ("COTA", X0 + 105, "ra"), ("CORTE m³", X0 + 200, "ra"), ("RELLENO m³", X0 + 300, "ra"),
-            ("MÁX. C / R (m)", X1, "ra")]
+    cols = [("LOTE", X0, "la"), ("CASA", X0 + 92, "ra"), ("CORTE", X0 + 160, "ra"), ("RELL.", X0 + 222, "ra"),
+            ("MURO m²", X0 + 300, "ra"), ("MÁX", X0 + 350, "ra"), ("TERR.", X1, "ra")]
     for t_, xx, an in cols:
         d.text((xx, y), t_, font=fuente(10, True), fill=GRIS, anchor=an)
     y += 15
     d.line([(X0, y), (X1, y)], fill=GRIS, width=1)
     y += 4
     tc = tr = 0
+    tm = 0
     for p in pads[:16]:
-        vals = [str(p["id"]), f"{p['z']:.2f}", f"{p['corte_m3']:,}", f"{p['relleno_m3']:,}",
-                f"{p['corte_max']:.1f} / {p['relleno_max']:.1f}"]
+        vals = [str(p["id"]), f"{p['z']:.1f}", f"{p['corte_m3']:,}", f"{p['relleno_m3']:,}", f"{p['muro_m2']:,}",
+                f"{p['muro_max']:.1f}", str(len(p["terrazas"]))]
+        alto = p["muro_max"] > altimetria.MURO_ESTRUCTURAL
         for v, (_, xx, an) in zip(vals, cols):
-            d.text((xx, y), v, font=fuente(11.5), fill=TINTA, anchor=an)
+            d.text((xx, y), v, font=fuente(11.5, alto and an == "ra" and v == vals[5]), fill=(178, 52, 40) if (alto and v == vals[5]) else TINTA, anchor=an)
         y += 17
     for p in pads:
         tc += p["corte_m3"]
         tr += p["relleno_m3"]
+        tm += p["muro_m2"]
     d.line([(X0, y + 2), (X1, y + 2)], fill=NEGRO, width=1)
     y += 6
-    d.text((X0, y), "Total", font=fuente(11.5, True), fill=NEGRO, anchor="la")
-    d.text((X0 + 200, y), f"{tc:,}", font=fuente(11.5, True), fill=NEGRO, anchor="ra")
-    d.text((X0 + 300, y), f"{tr:,}", font=fuente(11.5, True), fill=NEGRO, anchor="ra")
+    d.text((X0, y), "Total m³ / m²", font=fuente(11.5, True), fill=NEGRO, anchor="la")
+    d.text((X0 + 160, y), f"{tc:,}", font=fuente(11.5, True), fill=NEGRO, anchor="ra")
+    d.text((X0 + 222, y), f"{tr:,}", font=fuente(11.5, True), fill=NEGRO, anchor="ra")
+    d.text((X0 + 300, y), f"{tm:,}", font=fuente(11.5, True), fill=NEGRO, anchor="ra")
     y += 24
-    nota = ("Cada casa va pegada a la calle, sobre una plataforma a la cota de la calle (el carro entra a nivel); el "
-            "jardín del fondo conserva la caída natural. Volúmenes aproximados, sin taludes ni calle.")
+    nota = ("Terrazas que siguen el terreno: la de la casa va pegada a la calle y a no más de 1.5 m de su nivel (el carro "
+            "entra por una rampa lateral de ≤ 15 %); el jardín va en terrazas escalonadas. Los cambios de nivel se "
+            "resuelven con muros de contención (en rojo, más de 3 m: piden diseño estructural). CASA: cota de la "
+            "terraza; CORTE y RELL. en m³; MURO: cara de muro en m²; MÁX: altura máxima (m). Volúmenes aproximados.")
     palabras, act, lineas_n = nota.split(), "", []
     for p_ in palabras:
         prueba = (act + " " + p_).strip()
@@ -329,18 +335,20 @@ def generar_corte(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None, 
         y += 15
 
     # simbología
-    y = H - MARGEN - 7 - 150 - 22 * 5 - 40
+    y = H - MARGEN - 7 - 150 - 22 * 6 - 40
     d.line([(cx0, y), (W - MARGEN - 7, y)], fill=NEGRO, width=1)
     y += 12
     d.text((X0, y), "SIMBOLOGÍA", font=fuente(13, True), fill=NEGRO, anchor="la")
     y += 24
     mx0, mx1, tx = X0, X0 + 46, X0 + 60
-    for tipo, txt in (("prop", "Terreno terminado (plataformas, calle y taludes 1.5:1)"),
+    for tipo, txt in (("prop", "Terreno terminado (terrazas y calle)"), ("muro", "Muro de contención"),
                       ("nat", "Terreno natural (relieve)"), ("corte", "Corte"), ("relleno", "Relleno"),
                       ("lote", "Lindero de lote / del terreno")):
         yc = y + 7
         if tipo == "prop":
             d.line([(mx0, yc), (mx1, yc)], fill=NEGRO, width=3)
+        elif tipo == "muro":
+            d.rectangle([mx0 + 18, yc - 8, mx0 + 26, yc + 8], fill=(110, 104, 96), outline=NEGRO)
         elif tipo == "nat":
             _discontinua(d, [(mx0, yc), (mx1, yc)], NATURAL, 2, 9, 5)
         elif tipo == "corte":
