@@ -16,10 +16,12 @@ sys.path.insert(0, RAIZ)
 sys.path.insert(0, os.path.join(RAIZ, "tests"))
 
 from agente import Agente, Sesion  # noqa: E402
+from motor import proyeccion  # noqa: E402
 from servicios.llm import GeminiLLM  # noqa: E402
 from test_calle_central import GuionQuintas  # noqa: E402
 
 PIN = (13.72121, -89.24686)
+ESQUINA = (473280.676, 289049.929)
 SALIDA = "/tmp/entrega-quintas"
 
 
@@ -32,7 +34,18 @@ def main():
     ag.atender(s, "plano", [{"mime": "image/jpeg", "nombre": "p.jpg", "datos": b"x"}])
     ag.atender(s, "unir")
     s.partes[1]["area_declarada"] = 6220.08  # lo que dice el plano del terreno B (su cuadro de rumbos no cuadra)
-    print("ubicar:", ag.h_ubicar_terreno(s, lat=PIN[0], lng=PIN[1]).get("ok"), flush=True)
+    # ubicación con las coordenadas del plano: la esquina de la calle donde termina el lindero común de A y B
+    # (E 473,280.676 · N 289,049.929, Lambert SIRGAS); si no hay lindero, el pin aproximado
+    t = s.get_terreno()
+    if s.lindero:
+        cx, cy = t.centroide()
+        tope = max(s.lindero, key=lambda q: q[1])
+        t.mover(ESQUINA[0] - (tope[0] + cx), ESQUINA[1] - (tope[1] + cy))
+        t.ubicado = True
+        s.set_terreno(t)
+        print("ubicado con la esquina del plano:", [round(v, 6) for v in proyeccion.a_latlng(*t.centroide())], flush=True)
+    else:
+        print("ubicar:", ag.h_ubicar_terreno(s, lat=PIN[0], lng=PIN[1]).get("ok"), flush=True)
     r = ag.h_obtener_relieve(s)
     print("relieve:", r.get("ok"), json.dumps(r.get("estadisticas"), ensure_ascii=False), flush=True)
     ag.atender(s, "quintas")
