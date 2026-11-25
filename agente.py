@@ -278,8 +278,12 @@ FLUJO:
       relieve, calle y servicios, relieve, cumplimiento, opciones legales a validar con notario y siguientes pasos.
    b) CARPETA TÉCNICA: plano técnico (planimetría con medidas), plano altimétrico (pendientes, curvas de nivel, perfil
       de la calle y relieve por lote), lámina PDF con el cuadro de cumplimiento, DXF 2D y 3D y KML.
-   c) CARPETA COMERCIAL: imagen de ambiente (vista aérea pintada con IA, ilustrativa y no a escala, que respeta hacia
-      dónde baja el terreno) y plano de presentación con medidas.
+   b2) La carpeta técnica también trae el CORTE TRANSVERSAL con la terracería: cada casa pegada a la calle sobre una
+      plataforma a la cota de la calle (el carro entra a nivel), jardín al fondo con su caída natural, y el corte y el
+      relleno de cada lote en m³ (aproximados con relieve satelital).
+   c) CARPETA COMERCIAL (pintadas con IA sobre el 3D del motor, ilustrativas y no a escala, respetando hacia dónde baja
+      el terreno): vista aérea de ambiente, vista desde el portón, vista desde la quebrada, lotes listos con su
+      terracería (sin casas), y el plano de presentación con medidas.
    Pide nombre del proyecto y municipio si no los tienes. Di en una línea que la imagen de ambiente es solo para dar
    idea del proyecto y que las medidas y áreas están en el resumen y la carpeta técnica, que son del motor. Si el
    resumen trae "avisos" (un plano cuyo cuadro no cuadra con su área), dilo primero y claro. Si la planta tiene
@@ -938,8 +942,9 @@ class Agente:
             modelo3d.dxf(dxf3d, escena)
             archivos.append((dxf3d, "Modelo 3D para AutoCAD: terreno, lotes, calles y casas tipo (vista Realista → Render)"))
         # tres partes: resumen ejecutivo, carpeta técnica y carpeta comercial
-        comercial = [(p["ruta"], p["titulo"]) for p in presentacion_ if p["vista"] in ("ambiente", "aerea", "planta")]
-        tecnica = [(p["ruta"], p["titulo"]) for p in presentacion_ if p["vista"] in ("tecnica", "altimetria")]
+        comercial = [(p["ruta"], p["titulo"]) for p in presentacion_
+                     if p["vista"] in ("ambiente", "aerea", "porton", "quebrada", "limpios", "planta")]
+        tecnica = [(p["ruta"], p["titulo"]) for p in presentacion_ if p["vista"] in ("tecnica", "altimetria", "corte")]
         for ruta, titulo in archivos:
             (comercial if ruta.endswith("-vista-3d.jpg") else tecnica).append((ruta, titulo))
         archivos = []

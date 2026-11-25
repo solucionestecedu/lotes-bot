@@ -241,3 +241,60 @@ def guia_render(malla: Malla | None, anillo, a_px, W: float, H: float, barr: lis
         txt += (f" At the {_zona_imagen(*a_px(c.x, c.y), caja)} of the property there is a steep drop (ravine bank): show "
                 "it as a sharp forested slope going down, with no houses on it.")
     return txt
+
+
+# ------------------------------------------------------------------ terracería por lote
+def plataformas(lot, malla: Malla, retiro_fondo: float = 3.0, margen_lado: float = 2.0) -> list[dict]:
+    """Plataforma de cada lote para la casa pegada a la calle: va del borde de la calle hasta 3 m detrás de la casa, con
+    2 m a cada lado, a la cota de la calle frente al lote (acceso del carro a nivel). El resto del lote (jardín) se
+    deja con su caída natural. Devuelve por lote la plataforma, su cota y el corte y relleno aproximados (m³, sin
+    taludes) y la altura máxima de corte y de relleno."""
+    from shapely.ops import nearest_points
+
+    from .modelo3d import _frente, huella_casa
+
+    calles = unary_union(lot.calles) if lot.calles else None
+    out = []
+    for l in lot.lotes:
+        esq = huella_casa(l, calles, lot.angulo)
+        if esq is None:
+            continue
+        (x0, y0), (x1, y1), (x2, y2), (x3, y3) = esq
+        ux, uy = x1 - x0, y1 - y0
+        w = math.hypot(ux, uy) or 1
+        ux, uy = ux / w, uy / w
+        vx, vy = x3 - x0, y3 - y0
+        dpr = math.hypot(vx, vy) or 1
+        vx, vy = vx / dpr, vy / dpr
+        casa = Polygon(esq)
+        frente_casa = LineString([(x0, y0), (x1, y1)])
+        # hasta la calle: el frente de la casa se proyecta al borde de la calle más cercano
+        if calles is not None:
+            p_c, p_h = nearest_points(calles, frente_casa)
+            hasta = max(0.0, p_c.distance(p_h)) + 0.5
+        else:
+            hasta = 3.0
+        a = (x0 - ux * margen_lado - vx * hasta, y0 - uy * margen_lado - vy * hasta)
+        b = (x1 + ux * margen_lado - vx * hasta, y1 + uy * margen_lado - vy * hasta)
+        c = (x2 + ux * margen_lado + vx * retiro_fondo, y2 + uy * margen_lado + vy * retiro_fondo)
+        d = (x3 - ux * margen_lado + vx * retiro_fondo, y3 - uy * margen_lado + vy * retiro_fondo)
+        pad = Polygon([a, b, c, d]).intersection(l["poly"])
+        if pad.is_empty:
+            continue
+        if pad.geom_type != "Polygon":
+            pad = max(getattr(pad, "geoms", [pad]), key=lambda g: g.area)
+        # cota: la de la calle frente a la casa (eje de la calle en el punto más cercano)
+        if calles is not None:
+            pc, _ = nearest_points(calles, casa)
+            z = malla.altura(pc.x, pc.y)
+        else:
+            z = float(np.nanmean(_muestras(malla, pad)[2]))
+        xs, ys, zs, _ = _muestras(malla, pad, n=200)
+        celda = pad.area / max(1, len(zs))
+        dz = zs - z
+        out.append({"id": l["id"], "poly": pad, "casa": casa, "z": round(float(z), 2),
+                    "corte_m3": round(float(np.sum(np.clip(dz, 0, None)) * celda)),
+                    "relleno_m3": round(float(np.sum(np.clip(-dz, 0, None)) * celda)),
+                    "corte_max": round(float(max(0.0, dz.max())), 1), "relleno_max": round(float(max(0.0, -dz.min())), 1),
+                    "eje": (ux, uy, vx, vy)})
+    return out

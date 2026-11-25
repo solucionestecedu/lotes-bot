@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import shapely
-from shapely.geometry import LineString, Polygon, box
+from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import nearest_points, unary_union
 
 from .lotificacion import Resultado
@@ -32,6 +32,8 @@ CLASES = {
     "muro": ("3D_CASAS_MUROS", 7, (240, 236, 226)),
     "techo": ("3D_CASAS_TECHOS", 14, (170, 72, 52)),
     "base": ("3D_BASE", 33, (176, 140, 104)),
+    "plataforma": ("3D_PLATAFORMAS", 41, (214, 200, 168)),
+    "talud": ("3D_TALUDES", 32, (150, 128, 96)),
 }
 ID_CLASE = {c: i for i, c in enumerate(CLASES, start=1)}  # para máscaras de clases (0 = cielo)
 ALTO_MUROS = 2.8
@@ -75,56 +77,104 @@ def _sobre_terreno(m: Malla, linea, paso=1.5, alza=0.12):
     return list(zip(xs.tolist(), ys.tolist(), zs.tolist()))
 
 
+def _frente(poly: Polygon, calles):
+    """Tramo del lindero del lote que da a la calle (el más largo) o None."""
+    if calles is None or calles.is_empty:
+        return None
+    g = poly.boundary.intersection(calles.buffer(0.6))
+    tramos = [x for x in getattr(g, "geoms", [g]) if x.geom_type == "LineString" and x.length > 1.0]
+    if not tramos:
+        from shapely.ops import linemerge
+
+        try:
+            g = linemerge(g)
+            tramos = [x for x in getattr(g, "geoms", [g]) if x.geom_type == "LineString" and x.length > 1.0]
+        except Exception:  # noqa: BLE001
+            tramos = []
+    return max(tramos, key=lambda x: x.length) if tramos else None
+
+
 def huella_casa(lote: dict, calles, angulo: float) -> list[tuple[float, float]] | None:
     """Planta de la casa tipo de un lote: 4 esquinas (frente izq., frente der., fondo der., fondo izq. según u, v).
-    La casa se recarga hacia la calle dejando 3 m de retiro; el ancho va paralelo a la calle."""
+    La casa va pegada a la calle (3 m de retiro) y el jardín queda al fondo; el ancho va paralelo al frente del lote.
+    En lotes sesgados o con cola se busca, a cada profundidad, el centro del lote a esa profundidad, y se queda la
+    posición más cercana a la calle donde la casa cabe completa."""
     poly = lote["poly"]
     interior = poly.buffer(-1.2)
     if interior.is_empty or interior.area < 30:
         return None
-    th = math.radians(angulo)
-    ux, uy = math.cos(th), math.sin(th)          # a lo largo de la calle
-    vx, vy = -uy, ux                              # hacia el fondo
-    c = poly.centroid
-    # la casa se recarga hacia la calle (frente), dejando un retiro de 3 m
-    if calles is not None and not calles.is_empty:
-        p_calle, _ = nearest_points(calles, c)
-        dx, dy = p_calle.x - c.x, p_calle.y - c.y
-        if dx * vx + dy * vy > 0:
-            vx, vy = -vx, -vy                         # v apunta del frente al fondo
     fondo_lote = lote["area"] / max(lote["frente"], 1)
-    # casa de 7 × 9 m en lotes chicos; en quintas crece con el lote (hasta 14 × 12 m)
     ancho = min(max(7.0, lote["frente"] * 0.5), 14.0, lote["frente"] * 0.7)
     prof = min(max(9.0, fondo_lote * 0.3), 12.0, fondo_lote * 0.45)
-    corrimiento = max(0.0, fondo_lote / 2 - 3.0 - prof / 2)
-    centros = [(c.x - vx * corrimiento, c.y - vy * corrimiento)]
-    # lotes irregulares (cuñas, lotes con cola): probar pegado a la calle y en el punto más holgado del lote
-    if calles is not None and not calles.is_empty:
-        p_calle, p_lote = nearest_points(calles, poly)
-        for dentro in (3.0 + prof / 2, 3.0 + prof):
-            centros.append((p_lote.x + vx * dentro, p_lote.y + vy * dentro))
-    try:
-        from shapely.ops import polylabel
+    fr = _frente(poly, calles)
+    if fr is not None:
+        (ax, ay), (bx, by) = fr.coords[0], fr.coords[-1]
+        L = math.hypot(bx - ax, by - ay) or 1
+        ux, uy = (bx - ax) / L, (by - ay) / L
+    else:
+        th = math.radians(angulo)
+        ux, uy = math.cos(th), math.sin(th)
+    vx, vy = -uy, ux                              # hacia el fondo
+    base = fr.interpolate(0.5, normalized=True) if fr is not None else poly.centroid
+    if fr is not None and not poly.buffer(-0.05).contains(Point(base.x + vx * 2, base.y + vy * 2)):
+        vx, vy = -vx, -vy
+    if fr is None:
+        c = poly.centroid
+        if calles is not None and not calles.is_empty:
+            p_calle, _ = nearest_points(calles, c)
+            if (p_calle.x - c.x) * vx + (p_calle.y - c.y) * vy > 0:
+                vx, vy = -vx, -vy
+    largo = max(poly.bounds[2] - poly.bounds[0], poly.bounds[3] - poly.bounds[1])
+    puntos = [base] + ([fr.interpolate(f, normalized=True) for f in (0.3, 0.7, 0.15, 0.85)] if fr is not None else [])
+    # orientaciones: a escuadra con el frente y, en lotes en cuña o sesgados, siguiendo el eje del lote
+    ejes = [(ux, uy, vx, vy)]
+    c = poly.centroid
+    ex, ey = c.x - base.x, c.y - base.y
+    el = math.hypot(ex, ey)
+    if el > 1:
+        ex, ey = ex / el, ey / el
+        if abs(ex * vx + ey * vy) < 0.985:  # más de ~10° de diferencia
+            ejes.append((ey, -ex, ex, ey))
+    opciones = []
+    for escala in (1.0, 0.85, 0.7, 0.6):
+        w, dd = ancho * escala / 2, prof * escala / 2
+        mejor = None
+        for (ux, uy, vx, vy), p0 in [(e, p) for e in ejes for p in puntos]:
+            prof_ = 3.0 + dd
+            while prof_ < largo:
+                cx, cy = p0.x + vx * prof_, p0.y + vy * prof_
+                # centro del lote a esa profundidad (los lotes sesgados se corren hacia un lado)
+                corte = LineString([(cx - ux * largo, cy - uy * largo), (cx + ux * largo, cy + uy * largo)]).intersection(interior)
+                pedazos = [g for g in getattr(corte, "geoms", [corte]) if g.geom_type == "LineString" and not g.is_empty]
+                if pedazos:
+                    pz = min(pedazos, key=lambda g: g.distance(Point(cx, cy)))
+                    m_ = pz.interpolate(0.5, normalized=True)
+                    cx, cy = m_.x, m_.y
+                esquinas = [(cx + sx * w * ux + sy * dd * vx, cy + sx * w * uy + sy * dd * vy)
+                            for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+                if Polygon(esquinas).within(interior):
+                    dist = Polygon(esquinas).distance(calles) if calles is not None and not calles.is_empty else prof_
+                    if mejor is None or dist < mejor[0] - 0.01:
+                        mejor = (dist, esquinas)
+                    break
+                prof_ += 1.0
+        if mejor is not None:
+            if mejor[0] <= 6.0:  # la más grande que queda pegada a la calle
+                return mejor[1]
+            opciones.append(mejor)
+    # si ninguna cabe junto a la calle (lotes muy angostos al frente), la que quede más cerca
+    return min(opciones, key=lambda o: o[0])[1] if opciones else None
 
-        q = polylabel(interior if interior.geom_type == "Polygon" else poly, tolerance=0.5)
-        centros.append((q.x, q.y))
-    except Exception:  # noqa: BLE001
-        pass
-    for escala in (1.0, 0.85, 0.7):
-        w, d = ancho * escala / 2, prof * escala / 2
-        for cx, cy in centros:
-            esquinas = [(cx + sx * w * ux + sy * d * vx, cy + sx * w * uy + sy * d * vy) for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
-            if Polygon(esquinas).within(interior):
-                return esquinas
-    return None
 
-
-def _casa(escena: Escena, m: Malla, lote: dict, calles, angulo: float):
-    esquinas = huella_casa(lote, calles, angulo)
+def _casa(escena: Escena, m: Malla, lote: dict, calles, angulo: float, pad: dict | None = None):
+    esquinas = pad["casa"].exterior.coords[:4] if pad is not None else huella_casa(lote, calles, angulo)
     if esquinas is None:
         return
-    zs = _alturas(m, [p[0] for p in esquinas], [p[1] for p in esquinas])
-    z0, z1 = float(zs.min()) - 0.3, float(zs.max()) + ALTO_MUROS
+    if pad is not None:  # sobre su terraza
+        z0, z1 = pad["z"], pad["z"] + ALTO_MUROS
+    else:
+        zs = _alturas(m, [p[0] for p in esquinas], [p[1] for p in esquinas])
+        z0, z1 = float(zs.min()) - 0.3, float(zs.max()) + ALTO_MUROS
     base = [(x, y, z0) for x, y in esquinas]
     arriba = [(x, y, z1) for x, y in esquinas]
     for k in range(4):
@@ -145,8 +195,9 @@ def _casa(escena: Escena, m: Malla, lote: dict, calles, angulo: float):
 
 
 def construir(t: Terreno, malla: Malla, lot: Resultado | None = None, margen: float = 40.0,
-              max_celdas: int = 45000, casas: bool = True) -> Escena:
-    """Maqueta: un bloque rectangular de terreno (el predio y sus alrededores) con costados hasta una base."""
+              max_celdas: int = 45000, casas: bool = True, plataformas: list | None = None) -> Escena:
+    """Maqueta: un bloque rectangular de terreno (el predio y sus alrededores) con costados hasta una base. Con
+    `plataformas` (altimetria.plataformas) cada casa queda sobre su terraza a la cota de la calle, con sus taludes."""
     terreno = Polygon(t.puntos).buffer(0)
     tminx, tminy, tmaxx, tmaxy = terreno.bounds
     mx1, my1 = malla.x0 + (malla.nx - 1) * malla.dx, malla.y0 + (malla.ny - 1) * malla.dx
@@ -171,6 +222,9 @@ def construir(t: Terreno, malla: Malla, lot: Resultado | None = None, margen: fl
             if geoms:
                 u = unary_union(geoms)
                 clase[shapely.contains_xy(u, cx, cy) & dentro] = nombre
+    if plataformas:
+        u_pads = unary_union([p["poly"] for p in plataformas])
+        dentro &= ~shapely.contains_xy(u_pads, cx, cy)  # el terreno natural se quita donde va una terraza
     escena = Escena(paso=paso)
     J, I = np.nonzero(dentro)
     for j, i in zip(J.tolist(), I.tolist()):
@@ -191,13 +245,40 @@ def construir(t: Terreno, malla: Malla, lot: Resultado | None = None, margen: fl
             escena.agregar("base", (a0, b0, b))
             escena.agregar("base", (a0, b, a))
     escena.lineas["lindero"] = [_sobre_terreno(malla, t.puntos + t.puntos[:1], alza=0.2)]
+    pads = {p["id"]: p for p in plataformas or []}
+    for p in pads.values():
+        _terraza(escena, malla, p, paso)
     if lot is not None:
         escena.lineas["lotes"] = [_sobre_terreno(malla, list(l["poly"].exterior.coords)) for l in lot.lotes]
         if casas:
             calles = unary_union(lot.calles) if lot.calles else None
             for l in lot.lotes:
-                _casa(escena, malla, l, calles, lot.angulo)
+                _casa(escena, malla, l, calles, lot.angulo, pads.get(l["id"]))
     return escena
+
+
+def _terraza(escena: Escena, m: Malla, pad: dict, paso: float):
+    """Terraza plana a su cota y, en el borde, la cara del talud hasta el terreno natural (corte o relleno)."""
+    poly = pad["poly"].buffer(0)
+    if poly.is_empty:
+        return
+    z = pad["z"]
+    tris = shapely.delaunay_triangles(poly, only_edges=False)
+    for tri in getattr(tris, "geoms", [tris]):
+        if tri.is_empty or not tri.representative_point().within(poly.buffer(0.01)):
+            continue
+        a, b, c = list(tri.exterior.coords)[:3]
+        escena.agregar("plataforma", ((a[0], a[1], z), (b[0], b[1], z), (c[0], c[1], z)))
+    borde = LineString(poly.exterior.coords).segmentize(max(1.0, paso))
+    cs = list(borde.coords)
+    zs = _alturas(m, [p[0] for p in cs], [p[1] for p in cs])
+    for (x0, y0), (x1, y1), g0, g1 in zip(cs, cs[1:], zs, zs[1:]):
+        if abs(g0 - z) < 0.05 and abs(g1 - z) < 0.05:
+            continue
+        a, b = (x0, y0, z), (x1, y1, z)
+        A, B = (x0, y0, float(g0)), (x1, y1, float(g1))
+        escena.agregar("talud", (a, b, B))
+        escena.agregar("talud", (a, B, A))
 
 
 # ---------------------------------------------------------------------------- DXF 3D
@@ -228,7 +309,7 @@ def dxf(ruta: str, escena: Escena) -> str:
 
 # ---------------------------------------------------------------------------- vista aérea
 def render_aereo(escena: Escena, t: Terreno, ancho: int = 1600, alto: int = 1000, elevacion: float = 38.0,
-                 malla: Malla | None = None, lineas: bool = True, mascara: bool = False):
+                 malla: Malla | None = None, lineas: bool = True, mascara: bool = False, camara: dict | None = None):
     """Vista aérea en perspectiva (algoritmo del pintor), sin textos. Devuelve (imagen PIL, pantalla) donde
     pantalla(x, y, z) da la posición en píxeles de un punto del terreno."""
     from PIL import Image, ImageDraw
@@ -261,6 +342,9 @@ def render_aereo(escena: Escena, t: Terreno, ancho: int = 1600, alto: int = 1000
     el = math.radians(elevacion)
     cam = np.array([c.x + vx * dist * math.cos(el), c.y + vy * dist * math.cos(el), zc + dist * math.sin(el)])
     objetivo = np.array([c.x, c.y, zc])
+    if camara is not None:  # cámara libre (a la altura de un dron bajo): posición, a dónde mira y ángulo de visión
+        cam = np.array(camara["pos"], dtype=float)
+        objetivo = np.array(camara["mira"], dtype=float)
     f = objetivo - cam
     f /= np.linalg.norm(f)
     der = np.cross(f, [0, 0, 1.0])
@@ -270,11 +354,19 @@ def render_aereo(escena: Escena, t: Terreno, ancho: int = 1600, alto: int = 1000
     P = np.array([tri for _, tri in tris], dtype=float)          # (n,3,3)
     d = P - cam
     xc, yc, zcam = d @ der, d @ arr, d @ f
+    if camara is not None:  # fuera lo que queda detrás de la cámara o pegado a ella
+        ok = (zcam > 1.5).all(axis=1)
+        P, xc, yc, zcam = P[ok], xc[ok], yc[ok], zcam[ok]
+        tris = [tr for tr, k in zip(tris, ok) if k]
     zcam = np.maximum(zcam, 1e-3)
     sx, sy = xc / zcam, yc / zcam
-    esc = 0.92 * min(W / (sx.max() - sx.min()), H * 0.82 / (sy.max() - sy.min()))
-    ox = W / 2 - esc * (sx.max() + sx.min()) / 2
-    oy = H * 0.47 + esc * (sy.max() + sy.min()) / 2
+    if camara is not None:
+        esc = (W / 2) / math.tan(math.radians(camara.get("fov", 60)) / 2)
+        ox, oy = W / 2, H / 2
+    else:
+        esc = 0.92 * min(W / (sx.max() - sx.min()), H * 0.82 / (sy.max() - sy.min()))
+        ox = W / 2 - esc * (sx.max() + sx.min()) / 2
+        oy = H * 0.47 + esc * (sy.max() + sy.min()) / 2
     X, Y = ox + esc * sx, oy - esc * sy
 
     # sombreado: sol desde el noroeste, 45° de altura
@@ -303,6 +395,8 @@ def render_aereo(escena: Escena, t: Terreno, ancho: int = 1600, alto: int = 1000
             qx, qy, qz = Q @ der, Q @ arr, np.maximum(Q @ f, 1e-3)
             px, py = ox + esc * qx / qz, oy - esc * qy / qz
             for k in range(len(pl) - 1):
+                if camara is not None and min(qz[k], qz[k + 1]) < 1.5:
+                    continue
                 segs.append(((qz[k] + qz[k + 1]) / 2 - 0.5, (px[k], py[k], px[k + 1], py[k + 1]), color, grosor))
 
     if mascara:

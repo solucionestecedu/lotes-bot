@@ -106,7 +106,8 @@ def test_aerea_con_relieve(tmp_path, caso_chiltiupan):
                                   m, [], lotes_por_lado=(4, 6))
     out = presentacion.generar(str(tmp_path), "ch", t, lot, m, {"acceso_lado": "norte"}, "Chiltiupán", None, None)
     # sin modelo de imagen: la vista 3D exacta del motor en lugar del ambiente, la planta y el técnico
-    assert [o["vista"] for o in out] == ["aerea", "planta", "tecnica", "altimetria"]
+    # sin modelo de imagen no van las vistas de venta (portón, quebrada, lotes limpios): solo con IA
+    assert [o["vista"] for o in out] == ["aerea", "planta", "tecnica", "altimetria", "corte"]
     assert Image.open(out[0]["ruta"]).size == (presentacion.LADO_LARGO, round(presentacion.LADO_LARGO * 9 / 16))
 
 
@@ -121,13 +122,19 @@ def test_ambiente_es_libre_y_no_lleva_medidas(tmp_path, caso_chiltiupan):
 
     def pintor(png, instruccion, aspecto):
         vistos.append(instruccion)
-        if instruccion.startswith(presentacion.INSTRUCCION_AMBIENTE):  # la IA cambia todo: igual se acepta
-            return _png(Image.new("RGB", (1600, 900), (90, 140, 80)))
+        if instruccion.startswith((presentacion.INSTRUCCION_AMBIENTE, presentacion.INSTRUCCION_PORTON,
+                                   presentacion.INSTRUCCION_QUEBRADA, presentacion.INSTRUCCION_LIMPIOS)):
+            return _png(Image.new("RGB", (1600, 900), (90, 140, 80)))  # la IA cambia todo: igual se acepta
         return _png(_repintar(Image.open(io.BytesIO(png)).convert("RGB")))
 
     out = presentacion.generar(str(tmp_path), "ch", t, lot, m, {"acceso_lado": "norte"}, "Chiltiupán", None, pintor)
-    assert [o["vista"] for o in out] == ["ambiente", "planta", "tecnica", "altimetria"]
+    assert [o["vista"] for o in out] == ["ambiente", "porton", "quebrada", "limpios", "planta", "tecnica", "altimetria",
+                                         "corte"]
     assert out[0]["ia"]
+    # las vistas de venta también reciben el relieve, y la de lotes limpios pide que no haya casas
+    assert all("TERRAIN" in v for v in vistos if v.startswith((presentacion.INSTRUCCION_PORTON,
+                                                              presentacion.INSTRUCCION_QUEBRADA)))
+    assert any(v.startswith(presentacion.INSTRUCCION_LIMPIOS) and "NO houses" in v for v in vistos)
     amb = next(v for v in vistos if v.startswith(presentacion.INSTRUCCION_AMBIENTE))
     # le dice dónde va la entrada y cuántas casas van de cada lado (las del motor)
     assert "gated entrance" in amb and f"{len(lot.lotes)} in total" in amb

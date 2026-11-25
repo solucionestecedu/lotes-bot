@@ -119,3 +119,34 @@ def test_caida_adentro_no_deja_hoyos_en_los_lotes():
     m = Malla(x0, y0, dx, nx, ny, z, "archivo")
     assert altimetria.zonas(m, Polygon(RECT), 50)  # sí hay una zona empinada adentro
     assert altimetria.barrancos(m, RECT) == []
+
+
+def test_casas_pegadas_a_la_calle_y_plataformas_a_su_cota():
+    from shapely.ops import unary_union
+
+    from motor import modelo3d
+
+    m = _ladera(RECT, caida_borde=False)
+    lot = lotificar_calle_central(RECT, Parametros.de_dict(dict(frente=20, fondo=40, area_minima=700, lado_acceso="norte")),
+                                  m, [], lotes_por_lado=(2, 3))
+    calles = unary_union(lot.calles)
+    for l in lot.lotes:
+        assert Polygon(modelo3d.huella_casa(l, calles, lot.angulo)).distance(calles) < 6.5  # casa al frente
+    pads = altimetria.plataformas(lot, m)
+    assert len(pads) == len(lot.lotes)
+    for p in pads:
+        assert p["poly"].distance(calles) < 1.0  # la plataforma llega a la calle (el carro entra a nivel)
+        assert p["corte_m3"] >= 0 and p["relleno_m3"] >= 0
+    # en una ladera de 10 % que baja hacia la calle o se aleja, alguna plataforma corta o rellena
+    assert sum(p["corte_m3"] + p["relleno_m3"] for p in pads) > 0
+
+
+def test_corte_transversal_con_cotas():
+    from motor.plano_corte import generar_corte
+    from motor.terreno import Terreno
+
+    m = _ladera(RECT, caida_borde=False)
+    lot = lotificar_calle_central(RECT, Parametros.de_dict(dict(frente=20, fondo=40, area_minima=700, lado_acceso="norte")),
+                                  m, [], lotes_por_lado=(2, 3))
+    img, pads = generar_corte(Terreno(nombres=[f"V{i}" for i in range(4)], puntos=RECT), lot, m, {}, "Prueba")
+    assert img.size == (2048, 1448) and pads

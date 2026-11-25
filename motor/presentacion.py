@@ -412,8 +412,18 @@ def _arbol(d: ImageDraw.ImageDraw, q, rr, rng):
 
 
 # --------------------------------------------------------------------------------------------- aérea
-def calco_aereo(t: Terreno, lot: Resultado, malla: Malla, lado_largo: int = LADO_LARGO) -> Dibujo:
-    escena = modelo3d.construir(t, malla, lot, margen=10.0)
+def _pads(lot, malla):
+    try:
+        from .altimetria import plataformas
+
+        return plataformas(lot, malla)
+    except Exception:  # noqa: BLE001
+        log.exception("plataformas")
+        return None
+
+
+def calco_aereo(t: Terreno, lot: Resultado, malla: Malla, lado_largo: int = LADO_LARGO, casas: bool = True) -> Dibujo:
+    escena = modelo3d.construir(t, malla, lot, margen=10.0, casas=casas, plataformas=_pads(lot, malla))
     W, H = lado_largo, round(lado_largo * 9 / 16)
     img, pantalla = modelo3d.render_aereo(escena, t, W, H, 40.0, malla, lineas=True)
     alt = lambda x, y: float(modelo3d._alturas(malla, [x], [y])[0])  # noqa: E731
@@ -428,6 +438,54 @@ def calco_aereo(t: Terreno, lot: Resultado, malla: Malla, lado_largo: int = LADO
     msk, _ = modelo3d.render_aereo(escena, t, W, H, 40.0, malla, mascara=True)
     return Dibujo("aerea", img, "16:9", a_px, linderos, None, (0, 0, W, H),
                   {"pantalla": pantalla, "alt": alt, "mascara": np.asarray(msk)[:, :, 0]})
+
+
+def camaras(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None = None) -> dict:
+    """Cámaras de las vistas de venta: desde el portón mirando la calle hacia el redondel, y desde la quebrada (o el lado
+    bajo) mirando el proyecto ladera arriba. Alturas de un dron bajo, para que se lea la terracería."""
+    prop = Polygon(t.puntos).buffer(0)
+    c = prop.centroid
+    zs_ok = malla.z[np.isfinite(malla.z)]
+    z_def = float(np.nanmin(zs_ok)) if zs_ok.size else 0.0
+
+    def alt(x, y):
+        z = malla.altura(x, y)
+        return z if math.isfinite(z) else z_def
+
+    out = {}
+    st = lot.stats
+    ent, ret = st.get("entrada_calle"), st.get("retorno_centro")
+    if ent and ret:
+        L = math.dist(ent, ret) or 1
+        ux, uy = (ret[0] - ent[0]) / L, (ret[1] - ent[1]) / L
+        px_, py_ = ent[0] - ux * 24, ent[1] - uy * 24
+        mx, my = ent[0] + ux * 0.55 * L, ent[1] + uy * 0.55 * L
+        out["porton"] = {"pos": (px_, py_, alt(ent[0], ent[1]) + 19), "mira": (mx, my, alt(mx, my)), "fov": 60}
+    lado = next((q.get("lado") for q in (ficha or {}).get("quebradas") or [] if q.get("lado") in LADOS), None)
+    if lado:
+        az = math.radians(LADOS[lado])
+        gx, gy = math.sin(az), math.cos(az)
+    else:
+        from .altimetria import resumen
+
+        r = resumen(malla, t.puntos)
+        gx, gy = r["punto_bajo"][0] - r["punto_alto"][0], r["punto_bajo"][1] - r["punto_alto"][1]
+        n = math.hypot(gx, gy) or 1
+        gx, gy = gx / n, gy / n
+    ext = max(prop.bounds[2] - prop.bounds[0], prop.bounds[3] - prop.bounds[1])
+    px_, py_ = c.x + gx * ext * 0.62, c.y + gy * ext * 0.62
+    mx, my = c.x - gx * ext * 0.08, c.y - gy * ext * 0.08
+    out["quebrada"] = {"pos": (px_, py_, alt(px_, py_) + 22), "mira": (mx, my, alt(mx, my)), "fov": 60}
+    return out
+
+
+def calco_vista(t: Terreno, lot: Resultado, malla: Malla, camara: dict, lado_largo: int = LADO_LARGO) -> Dibujo:
+    escena = modelo3d.construir(t, malla, lot, margen=48.0, plataformas=_pads(lot, malla))
+    W, H = lado_largo, round(lado_largo * 9 / 16)
+    img, pantalla = modelo3d.render_aereo(escena, t, W, H, 40.0, malla, lineas=True, camara=camara)
+    alt = lambda x, y: float(modelo3d._alturas(malla, [x], [y])[0])  # noqa: E731
+    return Dibujo("vista", img, "16:9", lambda x, y, z=None: pantalla(x, y, alt(x, y) if z is None else z), [], None,
+                  (0, 0, W, H), {"pantalla": pantalla, "alt": alt})
 
 
 # --------------------------------------------------------------------------------------------- pintar
@@ -468,6 +526,39 @@ INSTRUCCION_AMBIENTE = (
     "lots or houses. Do not write any text, letters, numbers, labels, logos or watermarks."
 )
 
+
+
+INSTRUCCION_PORTON = (
+    "You are given a simple 3D massing model of a small gated country-house (quinta) subdivision on a hillside in El "
+    "Salvador, seen from a low drone just above the entrance gate, looking along the single access road towards the "
+    "round turnaround at the end. Turn it into a premium, photorealistic real-estate marketing photo. Keep the same "
+    "camera, the road and its direction, the turnaround, the number of houses on each side and their places: each "
+    "house sits right next to the road on its own flat terrace at road level, with a short driveway, and its garden "
+    "behind it following the natural slope; between terraces there are grassy embankments and low stone retaining "
+    "walls. Improve everything else: elegant gate with stone pillars and a small guard house at the entrance, "
+    "contemporary tropical houses, palms and mature trees, warm late-afternoon light. Do NOT add other streets, lots "
+    "or houses. Do not write any text, letters, numbers, signs with text, logos or watermarks."
+)
+INSTRUCCION_QUEBRADA = (
+    "You are given a simple 3D massing model of a small country-house (quinta) subdivision on a hillside in El "
+    "Salvador, seen from a low drone over the protected ravine at the lower side of the land, looking up the slope at "
+    "the project. Turn it into a premium, photorealistic real-estate marketing photo. Keep the same camera and "
+    "framing, the single road with its round turnaround, the number of houses and their places on their stepped "
+    "terraces, and the slope. In the foreground keep the protected ravine as dense tropical forest with a small rocky "
+    "creek and a walking path with benches in the green area next to it. Warm golden-hour light, soft haze in the "
+    "background hills. Do NOT add other streets, lots or houses. Do not write any text, letters, numbers, logos or "
+    "watermarks."
+)
+INSTRUCCION_LIMPIOS = (
+    "You are given a simple 3D massing model, seen from the air, of a small country-house (quinta) subdivision on a "
+    "hillside in El Salvador right after the earthworks and before any house is built. Turn it into a photorealistic "
+    "aerial photo of the finished land development: the single paved access road with curbs ending in its round "
+    "turnaround, and on each lot a flat graded terrace pad at road level (fresh compacted earth or young grass) next "
+    "to the road, with neat grassy embankments and a few low stone retaining walls between terraces, and the rest of "
+    "each lot as natural sloping grass. NO houses, no buildings, no pools: only the prepared lots, the road, the "
+    "entrance gate, young trees along the road and the protected ravine forest. Keep the same camera, layout, number "
+    "of lots and slope. Do not write any text, letters, numbers, logos or watermarks."
+)
 
 
 def guia_ambiente(dib: Dibujo, lot: Resultado) -> str:
@@ -1046,7 +1137,8 @@ def rotular_aerea(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, pr
     return img.convert("RGB")
 
 
-def rotular_ambiente(img: Image.Image, lot: Resultado, ficha: dict, proyecto: str, partes: list | None = None) -> Image.Image:
+def rotular_ambiente(img: Image.Image, lot: Resultado, ficha: dict, proyecto: str, partes: list | None = None,
+                     vista: str = "") -> Image.Image:
     """Imagen de ambiente (libre, pintada por la IA): solo el título con los números del motor y el aviso de que es
     ilustrativa. No lleva medidas ni números de lote, porque la IA no respeta las posiciones exactas."""
     img = img.convert("RGBA")
@@ -1062,7 +1154,8 @@ def rotular_ambiente(img: Image.Image, lot: Resultado, ficha: dict, proyecto: st
     t1, t2 = _titulo(lot, ficha, partes)
     _texto(d, (W * 0.025, H - H * 0.085), t1, H * 0.036, True, (255, 255, 255), anchor="lm", borde=0)
     _texto(d, (W * 0.025, H - H * 0.04), f"{proyecto} · {t2}", H * 0.021, False, (235, 235, 230), anchor="lm", borde=0)
-    aviso = "IMAGEN DE AMBIENTE · ILUSTRATIVA, NO A ESCALA · las medidas exactas están en el plano y la lámina"
+    aviso = (f"{vista.upper() + ' · ' if vista else 'IMAGEN DE AMBIENTE · '}ILUSTRATIVA, NO A ESCALA · las medidas "
+             "exactas están en el plano y la lámina")
     ta = H * 0.017
     f = _fuente(int(ta), True)
     tw = d.textlength(aviso, font=f)
@@ -1086,10 +1179,20 @@ def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | 
     Devuelve [{ruta, nombre, titulo, vista, ia, ...}]."""
     ficha = ficha or {}
     calcos = {}
+    cams = {}
+    if malla is not None:
+        try:
+            cams = camaras(t, lot, malla, ficha)
+        except Exception:  # noqa: BLE001
+            log.exception("cámaras")
     for vista, fn in (("ambiente", (lambda: calco_aereo(t, lot, malla)) if malla is not None else None),
+                      ("porton", (lambda: calco_vista(t, lot, malla, cams["porton"])) if "porton" in cams else None),
+                      ("quebrada", (lambda: calco_vista(t, lot, malla, cams["quebrada"])) if "quebrada" in cams else None),
+                      ("limpios", (lambda: calco_aereo(t, lot, malla, casas=False)) if malla is not None else None),
                       ("planta", lambda: calco_planta(t, lot, malla, ficha)),
                       ("tecnica", lambda: None),
-                      ("altimetria", (lambda: None) if malla is not None else None)):
+                      ("altimetria", (lambda: None) if malla is not None else None),
+                      ("corte", (lambda: None) if malla is not None and lot.stats.get("modo") == "calle_central" else None)):
         if fn is None:
             continue
         try:
@@ -1098,11 +1201,21 @@ def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | 
             log.exception("calco %s", vista)
     if "ambiente" in calcos:
         calcos["ambiente"].vista = "ambiente"
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        # la planta se revisa contra el trazo (2 intentos); el ambiente es libre (1 intento)
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        # la planta se revisa contra el trazo (2 intentos); las vistas de venta son libres (1 intento)
         futuros = {}
         if "planta" in calcos:
             futuros["planta"] = ex.submit(pintar, calcos["planta"], pintor, INSTRUCCION_PLANTA, 2)
+        for v_, ins_ in (("porton", INSTRUCCION_PORTON), ("quebrada", INSTRUCCION_QUEBRADA), ("limpios", INSTRUCCION_LIMPIOS)):
+            if v_ in calcos and calcos[v_] is not None and pintor is not None:
+                dib_v = calcos[v_]
+                try:
+                    from . import altimetria as _alt
+
+                    ins_ += _alt.guia_render(malla, t.puntos, dib_v.a_px, *dib_v.imagen.size)
+                except Exception:  # noqa: BLE001
+                    log.exception("guía de relieve %s", v_)
+                futuros[v_] = ex.submit(pintar, dib_v, pintor, ins_, 1, False)
         if "ambiente" in calcos:
             ins = INSTRUCCION_AMBIENTE + guia_ambiente(calcos["ambiente"], lot)
             try:  # el relieve dicho en términos de la imagen, para que la IA no aplane el terreno
@@ -1116,12 +1229,29 @@ def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | 
             futuros["ambiente"] = ex.submit(pintar, calcos["ambiente"], pintor, ins, 1, False)
         pintadas = {v: f.result() for v, f in futuros.items()}
     out = []
-    for vista in ("ambiente", "planta", "tecnica", "altimetria"):
+    nombres_v = {"porton": ("Vista desde el portón", "Vista desde el portón (ilustrativa)"),
+                 "quebrada": ("Vista desde la quebrada", "Vista desde la quebrada (ilustrativa)"),
+                 "limpios": ("Lotes listos, antes de construir", "Lotes listos con su terracería (ilustrativa)")}
+    for vista in ("ambiente", "porton", "quebrada", "limpios", "planta", "tecnica", "altimetria", "corte"):
         if vista not in calcos:
             continue
         dib = calcos[vista]
         try:
-            if vista == "ambiente":
+            if vista in nombres_v:
+                if vista not in pintadas:
+                    continue
+                img, info = pintadas[vista]
+                if not info["ia"]:  # sin IA no se manda la maqueta: no aporta como imagen de venta
+                    continue
+                final = rotular_ambiente(img, lot, ficha, proyecto, partes, vista=nombres_v[vista][0])
+                titulo = nombres_v[vista][1]
+            elif vista == "corte":
+                from .plano_corte import generar_corte
+
+                info = {"ia": False}
+                final, _ = generar_corte(t, lot, malla, ficha, proyecto, ubicacion)
+                titulo = "Corte transversal y terracería por lote"
+            elif vista == "ambiente":
                 img, info = pintadas[vista]
                 if info["ia"]:
                     final = rotular_ambiente(img, lot, ficha, proyecto, partes)
