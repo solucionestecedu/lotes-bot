@@ -139,9 +139,12 @@ def generar_carpeta(ruta: str, proyecto: str, ubicacion: str, cifras: list[tuple
         c.setFont("DJB", 10)
         c.drawString(60, y, "Atención")
         c.setFont("DJ", 9.5)
+        from reportlab.lib.utils import simpleSplit
+
         for a in avisos:
-            y -= 15
-            c.drawString(60, y, a[:150])
+            for ln in simpleSplit(a, "DJ", 9.5, W - 120):
+                y -= 14
+                c.drawString(60, y, ln)
     c.showPage()
     c.save()
 
