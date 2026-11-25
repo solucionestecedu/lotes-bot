@@ -218,3 +218,18 @@ def test_corte_con_muros_y_resumen_compara(tmp_path):
     r = resumen.generar_resumen(str(tmp_path / "r.pdf"), t, lot, m, {}, "Prueba", None, "", None, None, None)
     texto = " ".join(pg.extract_text() for pg in PdfReader(r["ruta"]).pages)
     assert "Con muros" in texto and "Con taludes" in texto
+
+
+def test_calle_empinada_no_deja_muros_altos_entre_lotes():
+    """Con la calle bajando 30 %, cada lote escalona también a lo ancho: dos lotes vecinos se encuentran cerca del
+    terreno natural y no con un muro de 6 m (lo que pasaba con una sola terraza de lado a lado del lote)."""
+    x0, y0, dx, nx, ny = malla_para(RECT, 5.0, 30.0)
+    z = np.array([[500 + 0.30 * (x0 + i * dx) + 0.05 * (y0 + j * dx) for i in range(nx)] for j in range(ny)])
+    m = Malla(x0, y0, dx, nx, ny, z, "archivo")
+    lot = lotificar_calle_central(RECT, Parametros.de_dict(dict(frente=20, fondo=40, area_minima=700, lado_acceso="oeste")),
+                                  m, [], lotes_por_lado=(3, 3))
+    terr = altimetria.terrazas(lot, m)
+    for p in terr:
+        assert p["muro_max"] <= 5.0
+        assert max((mu["h"] for mu in p["muros"] if mu["tipo"] == "entre lotes"), default=0) <= 3.0
+        assert abs(p["z"] - p["z_calle"]) <= altimetria.RAMPA_MAX + 0.01

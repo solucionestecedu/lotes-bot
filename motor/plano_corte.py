@@ -145,6 +145,21 @@ def generar_corte(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None, 
             x1_, _ = P(ss[i + 1], 0)
             ya, yb = P(ss[i], a)[1], P(ss[i], b)[1]
             d.rectangle([x0_, min(ya, yb), x1_ + 0.6, max(ya, yb)], fill=col + (255,))
+        ocupado = []  # cajas de los letreros ya puestos: uno nuevo que se encima se sube o no se pone
+
+        def rotulo(xy, texto, f, fill, anchor, subir=0, ancho_max=None, paso=-14):
+            x_, y_ = xy
+            for k_ in range(subir + 1):
+                caja = d.textbbox((x_, y_ + paso * k_), texto, font=f, anchor=anchor)
+                if ancho_max is not None and caja[2] - caja[0] > ancho_max:
+                    return False
+                caja = (caja[0] - 3, caja[1] - 2, caja[2] + 3, caja[3] + 2)
+                if not any(caja[0] < o[2] and o[0] < caja[2] and caja[1] < o[3] and o[1] < caja[3] for o in ocupado):
+                    d.text((x_, y_ + paso * k_), texto, font=f, fill=fill, anchor=anchor)
+                    ocupado.append(caja)
+                    return True
+            return False
+
         # línea propuesta y natural
         d.line([P(ss[i], prop_z[i]) for i in range(n)], fill=NEGRO, width=3)
         # muros de contención: donde el perfil terminado salta de nivel (entre terrazas, a la calle o al terreno)
@@ -155,8 +170,6 @@ def generar_corte(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None, 
                 (mx, ya_), (_, yb_) = P(ss[i], a_), P(ss[i], b_)
                 d.rectangle([mx - 3, min(ya_, yb_), mx + 3, max(ya_, yb_)], fill=(110, 104, 96), outline=NEGRO)
                 muros_c.append((mx, min(ya_, yb_), abs(a_ - b_)))
-        for mx, ytop, h in muros_c:
-            d.text((mx, ytop - 6), f"muro {h:.1f} m", font=fuente(10.5, True), fill=(90, 84, 76), anchor="ms")
         _discontinua(d, [P(ss[i], nat[i]) for i in range(n)], NATURAL, 2, 9, 5)
         # calle
         if calles is not None and en_calle.any():
@@ -187,20 +200,22 @@ def generar_corte(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None, 
                 for k_ in range(1, 3):
                     wx = hx0 + (hx1 - hx0) * k_ / 3
                     d.rectangle([wx - 8, hy0 - alto * 0.7, wx + 8, hy0 - alto * 0.25], fill=(190, 214, 230), outline=GRIS)
-            d.text(((xa + xb) / 2, ya + 16), f"terraza casa {p['z']:.2f}", font=fuente(11.5, True), fill=NEGRO, anchor="mt")
+            rotulo(((xa + xb) / 2, ya + 16), f"terraza casa {p['z']:.2f}", fuente(11.5, True), NEGRO, "mt")
             dz_txt = []
             if p["corte_max"] >= 0.3:
                 dz_txt.append(f"corte hasta {p['corte_max']:.1f} m")
             if p["relleno_max"] >= 0.3:
                 dz_txt.append(f"relleno hasta {p['relleno_max']:.1f} m")
             if dz_txt:
-                d.text(((xa + xb) / 2, ya + 32), " · ".join(dz_txt), font=fuente(10.5), fill=TINTA, anchor="mt")
-            d.text(((xa + xb) / 2, y_rot), f"LOTE {p['id']}", font=fuente(16, True), fill=NEGRO, anchor="ms")
-        for p, tz, sa, sb in terr:  # terrazas de jardín
+                rotulo(((xa + xb) / 2, ya + 32), " · ".join(dz_txt), fuente(10.5), TINTA, "mt")
+            rotulo(((xa + xb) / 2, y_rot), f"LOTE {p['id']}", fuente(16, True), NEGRO, "ms")
+        for p, tz, sa, sb in terr:  # demás terrazas (jardín y laterales): solo si caben
             if tz["uso"] == "casa":
                 continue
             (xa, ya), (xb, _) = P(sa, tz["z"]), P(sb, tz["z"])
-            d.text(((xa + xb) / 2, ya + 14), f"jardín {tz['z']:.2f}", font=fuente(10.5), fill=TINTA, anchor="mt")
+            rotulo(((xa + xb) / 2, ya + 14), f"{tz['z']:.2f}", fuente(10.5), TINTA, "mt", ancho_max=max(0, xb - xa))
+        for mx, ytop, h in sorted(muros_c, key=lambda m_: -m_[2]):  # los muros más altos primero
+            rotulo((mx, ytop - 6), f"muro {h:.1f} m", fuente(10.5, True), (90, 84, 76), "ms", subir=2)
         # linderos que cruza el corte (lotes y terreno)
         for l in lot.lotes:
             g = linea.intersection(l["poly"].boundary)
@@ -215,7 +230,7 @@ def generar_corte(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None, 
                 s = linea.project(q)
                 x, y = P(s, malla.altura(q.x, q.y))
                 d.line([(x, y_rot + 4), (x, y)], fill=NEGRO, width=3)
-                d.text((x, y + 8), f"{malla.altura(q.x, q.y):.1f}", font=fuente(11.5, True), fill=NEGRO, anchor="mt")
+                rotulo((x, y + 8), f"{malla.altura(q.x, q.y):.1f}", fuente(11.5, True), NEGRO, "mt", subir=3, paso=16)
         d.text((dx0, dy1 + 40), "A", font=fuente(30, True), fill=NEGRO, anchor="lm")
         d.text((dx1, dy1 + 40), "A'", font=fuente(30, True), fill=NEGRO, anchor="rm")
         d.text(((dx0 + dx1) / 2, dy1 + 40),
@@ -274,9 +289,10 @@ def generar_corte(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None, 
         d.text(K(c.x, c.y), str(l["id"]), font=fuente(11, True), fill=TINTA, anchor="mm")
     for p in pads:
         for tz in p["terrazas"]:
-            if tz["poly"].geom_type == "Polygon":
-                d.polygon([K(*q) for q in tz["poly"].exterior.coords],
-                          fill=(214, 186, 150, 170) if tz["uso"] == "casa" else (196, 214, 170, 150))
+            for pz in getattr(tz["poly"], "geoms", [tz["poly"]]):
+                if pz.geom_type == "Polygon" and not pz.is_empty:
+                    d.polygon([K(*q) for q in pz.exterior.coords],
+                              fill=(214, 186, 150, 170) if tz["uso"] == "casa" else (196, 214, 170, 150))
     d.line([K(*q) for q in prop.exterior.coords], fill=NEGRO, width=2)
     if linea is not None:
         (la, lb) = linea.coords[0], linea.coords[-1]
@@ -318,7 +334,8 @@ def generar_corte(t: Terreno, lot: Resultado, malla: Malla, ficha: dict | None, 
     d.text((X0 + 300, y), f"{tm:,}", font=fuente(11.5, True), fill=NEGRO, anchor="ra")
     y += 24
     nota = ("Terrazas que siguen el terreno: la de la casa va pegada a la calle y a no más de 1.5 m de su nivel (el carro "
-            "entra por una rampa lateral de ≤ 15 %); el jardín va en terrazas escalonadas. Los cambios de nivel se "
+            "entra por una rampa lateral de ≤ 15 %); a los lados y en el jardín, terrazas escalonadas que bajan con la calle y con "
+            "la ladera. Los cambios de nivel se "
             "resuelven con muros de contención (en rojo, más de 3 m: piden diseño estructural). CASA: cota de la "
             "terraza; CORTE y RELL. en m³; MURO: cara de muro en m²; MÁX: altura máxima (m). Volúmenes aproximados.")
     palabras, act, lineas_n = nota.split(), "", []

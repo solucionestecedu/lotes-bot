@@ -186,6 +186,12 @@ HERRAMIENTAS = [
          "aprovechar": {"type": "boolean", "description": "máximo aprovechamiento (por defecto sí): el área verde se saca "
                         "solo de lo que falta y de la tierra menos vendible; lo que sobra se vuelve lote o se suma a lotes"},
      })},
+    {"nombre": "proponer_alternativas", "descripcion": "Arma varias maneras de lotificar el terreno (más o menos lotes, en "
+     "qué terreno va la calle, calle central o retícula), el motor mide cada una (lotes, área vendible, muros, tierra, "
+     "normas y revisión) y un modelo que piensa recomienda dos o tres con pros y contras. Manda una imagen con las "
+     "opciones lado a lado. Úsala cuando pidan opciones, alternativas, 'qué me conviene' o 'otra forma', o cuando el "
+     "prediseño tenga fallas o muros muy altos. Para aplicar la que elijan, llama predisenar con sus 'parametros'.",
+     "parametros": _obj({})},
     {"nombre": "generar_entregables", "descripcion": "Genera la lámina en PDF (planialtimétrico y, si hay prediseño, la "
      "lotificación), el KML para Google Earth, el DXF 2D para AutoCAD/Civil 3D y, si ya hay relieve, una vista 3D en "
      "imagen y un modelo 3D (DXF) con terreno, lotes, calles y casas tipo para renderizar en AutoCAD. Se los envía al usuario.",
@@ -898,6 +904,54 @@ class Agente:
             out["nota"] = "Sin relieve: el prediseño no consideró pendientes."
         return out
 
+    def h_proponer_alternativas(self, s: Sesion, salidas=None) -> dict:
+        t = s.get_terreno()
+        if t is None:
+            return {"ok": False, "error": "primero hay que cargar el terreno"}
+        from motor import disenador
+
+        m = s.get_malla()
+        modo, rango = self._modo(s)
+        original, cumplimiento = s.lotes_param, s.cumplimiento  # medir variantes no cambia el prediseño vigente
+        medidas, resultados = [], {}
+        try:
+            for v in disenador.variantes(s.lotes_param or {}, s.ficha, len(s.partes) > 1 and bool(s.lindero), modo, rango):
+                s.lotes_param = v["param"]
+                try:
+                    r, filas = self._lotificar(s)
+                except Exception as e:  # noqa: BLE001 - una variante que no cabe no tumba las demás
+                    log.info("variante %s no cupo: %s", v["id"], e)
+                    continue
+                medidas.append({**v, "medidas": disenador.medir(t, r, m, s.ficha, filas)})
+                resultados[v["id"]] = r
+        finally:
+            s.lotes_param, s.cumplimiento = original, cumplimiento
+        if not medidas:
+            return {"ok": False, "error": "ninguna variante cupo en el terreno"}
+        rec = disenador.recomendar(getattr(self.llm, "pensar", None), medidas,
+                                   disenador.contexto(t, m, s.ficha, s.lotes_param or {}))
+        por_id = {v["id"]: v for v in medidas}
+        opciones = []
+        for k, x in enumerate(rec["recomendadas"], 1):
+            v = por_id[x["id"]]
+            opciones.append({"opcion": k, "titulo": x["titulo"], "por_que": x["por_que"], "contra": x["contra"],
+                             "cambio": v["cambio"], "medidas": v["medidas"],
+                             "parametros": {kk: vv for kk, vv in v["param"].items() if kk != "entrada"}})
+        try:
+            carpeta = os.path.join(self.dir, uuid.uuid4().hex)
+            os.makedirs(carpeta, exist_ok=True)
+            ruta = disenador.imagen(t, [(x["id"], x["titulo"], resultados[x["id"]], por_id[x["id"]]["medidas"])
+                                        for x in rec["recomendadas"]], os.path.join(carpeta, "opciones.jpg"))
+            if salidas is not None:
+                salidas.append({"tipo": "archivo", "ruta": ruta, "nombre": "opciones.jpg", "imagen": True,
+                                "titulo": "Opciones de lotificación lado a lado"})
+        except Exception:  # noqa: BLE001
+            log.exception("imagen de opciones")
+        return {"ok": True, "opciones": opciones, "advertencias": rec["advertencias"], "eligio": rec["por"],
+                "variantes_medidas": len(medidas),
+                "nota": "Presenta las opciones en pocas líneas (número, título, por qué, contra y 2-3 cifras) y pregunta "
+                        "cuál quiere. Para aplicarla llama predisenar con sus 'parametros'. No inventes cifras."}
+
     def h_generar_entregables(self, s: Sesion, nombre_proyecto=None, ubicacion=None, propietario=None, salidas=None) -> dict:
         t = s.get_terreno()
         if t is None:
@@ -1038,7 +1092,10 @@ class Agente:
         laminas = [{"vista": p["vista"], **q, **({"repintada": True} if p.get("repintada") else {})}
                    for p in presentacion_ for q in p.get("revision") or []]
         if getattr(self.llm, "revisar", None) is not None and presentacion_:
-            revision["laminas"] = laminas or "sin problemas"
+            if any(p.get("revision_fallo") for p in presentacion_):
+                revision["laminas"] = "no se pudieron revisar: falló el modelo revisor (no quiere decir que estén bien)"
+            else:
+                revision["laminas"] = laminas or "sin problemas"
         repintadas = [p["vista"] for p in presentacion_ if p.get("repintada")]
         if repintadas:
             revision["vistas_repintadas"] = repintadas

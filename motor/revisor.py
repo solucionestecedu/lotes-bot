@@ -60,6 +60,11 @@ def revisar(t, lot, malla=None, ficha: dict | None = None, terr: list | None = N
                         f"se traslapan: {_ids(tras)}" if tras else "lotes y calle sin traslapes"))
     if calles is not None:
         c_fuera = calles.difference(terreno.buffer(0.3)).area
+        salida = calles.intersection(terreno.exterior.buffer(0.6)).length if calles.geom_type == "Polygon" else \
+            sum(g.intersection(terreno.exterior.buffer(0.6)).length for g in calles.geoms)
+        out.append(_chequeo("calle_llega_al_acceso", salida >= 3.0,
+                            "la calle llega al lindero (salida a la calle pública)" if salida >= 3.0
+                            else "la calle no llega al lindero: no tiene salida a la calle pública"))
         out.append(_chequeo("calle_dentro_del_terreno", c_fuera <= 2.0,
                             f"la calle se sale del terreno {c_fuera:,.0f} m² (redondel o tramo cortado)" if c_fuera > 2.0
                             else "la calle y el redondel caben completos en el terreno"))
@@ -205,11 +210,12 @@ def contexto_proyecto(lot, ficha: dict | None, chequeos: list[dict] | None = Non
     return "\n".join(lineas)
 
 
-def revisar_laminas(revisor, imagenes: list[tuple[str, str, str]], contexto: str) -> list[dict]:
+def revisar_laminas(revisor, imagenes: list[tuple[str, str, str]], contexto: str) -> list[dict] | None:
     """`revisor(partes, instruccion, esquema) -> dict`; `imagenes` = [(id, titulo, ruta)].
-    Devuelve [{id, problema, gravedad}] de lo más grave a lo menos (como mucho 12)."""
+    Devuelve [{id, problema, gravedad}] de lo más grave a lo menos (como mucho 12), o None si no se pudo revisar
+    (sin revisor o falló el modelo): "no se revisó" nunca se reporta como "sin problemas"."""
     if revisor is None or not imagenes:
-        return []
+        return None
     partes, ids = [], []
     for id_, titulo, ruta in imagenes:
         if not str(ruta).lower().endswith((".jpg", ".jpeg", ".png")):
@@ -220,12 +226,12 @@ def revisar_laminas(revisor, imagenes: list[tuple[str, str, str]], contexto: str
         except Exception:  # noqa: BLE001
             log.exception("revisor: no se pudo leer %s", ruta)
     if not partes:
-        return []
+        return None
     try:
         r = revisor(partes, INSTRUCCION_REVISOR.format(contexto=contexto), esquema_revisor(ids))
     except Exception:  # noqa: BLE001
         log.exception("revisor de láminas")
-        return []
+        return None
     orden = {"alta": 0, "media": 1, "baja": 2}
     probs = [p for p in (r or {}).get("problemas") or [] if p.get("problema") and p.get("id") in ids]
     return sorted(probs, key=lambda p: orden.get(p.get("gravedad"), 3))[:12]

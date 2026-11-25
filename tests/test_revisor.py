@@ -106,3 +106,15 @@ def test_vista_con_problema_grave_se_repinta_una_vez(tmp_path, caso_chiltiupan):
     assert por["tecnica"]["revision"][0]["problema"] == "letrero encimado" and not por["tecnica"].get("repintada")
     rep = [p for p in pedidos if "CORRECTIONS" in p]
     assert len(rep) == 1 and "la calle hace curva" in rep[0] and rep[0].startswith(presentacion.INSTRUCCION_PORTON)
+
+
+def test_si_el_revisor_falla_no_se_reporta_sin_problemas(tmp_path):
+    ruta = str(tmp_path / "a.jpg")
+    Image.new("RGB", (400, 300)).save(ruta)
+
+    def caido(partes, instruccion, esquema):
+        raise RuntimeError("402 sin créditos")
+
+    assert revisor.revisar_laminas(caido, [("tecnica", "Plano", ruta)], "") is None
+    assert revisor.revisar_laminas(None, [("tecnica", "Plano", ruta)], "") is None
+    assert revisor.revisar_laminas(lambda *a: {"problemas": []}, [("tecnica", "Plano", ruta)], "") == []

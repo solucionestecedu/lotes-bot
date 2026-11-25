@@ -136,6 +136,18 @@ class GeminiLLM(LLM):
         )
         return json.loads(r.text)
 
+    def pensar(self, texto: str, esquema: dict) -> dict:
+        """Una decisión de diseño con el modelo que piensa (el del revisor): lee las cifras del motor y elige."""
+        from google.genai import types
+
+        r = self.client.models.generate_content(
+            model=self.modelo_revisor or self.modelo_chat, contents=[texto],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json", response_json_schema=esquema,
+                thinking_config=types.ThinkingConfig(thinking_level=self.pensamiento_revisor or "high")),
+        )
+        return json.loads(r.text)
+
     def pintar(self, png: bytes, instruccion: str, aspecto: str) -> bytes | None:
         """Pinta una imagen a partir de un dibujo (Nano Banana). Devuelve los bytes de la imagen o None."""
         from google.genai import types

@@ -1345,6 +1345,10 @@ def _revisar_y_repintar(out, calcos, instrucciones, pintor, revisor, lot, ficha,
 
     contexto = contexto or rev.contexto_proyecto(lot, ficha)
     probs = rev.revisar_laminas(revisor, [(p["vista"], p["titulo"], p["ruta"]) for p in out], contexto)
+    if probs is None:  # el modelo no contestó: se dice que no se revisó (no que salió bien)
+        for p in out:
+            p["revision_fallo"] = True
+        return
     por_vista: dict[str, list] = {}
     for q in probs:
         por_vista.setdefault(q["id"], []).append(q)
@@ -1368,7 +1372,11 @@ def _revisar_y_repintar(out, calcos, instrucciones, pintor, revisor, lot, ficha,
         if rep:  # la segunda vuelta reemplaza lo que se dijo de esas vistas
             nuevos = rev.revisar_laminas(revisor, [(p["vista"], p["titulo"], p["ruta"]) for p in rep], contexto)
             for p in rep:
-                por_vista[p["vista"]] = [q for q in nuevos if q["id"] == p["vista"]]
+                if nuevos is None:  # no se pudo volver a revisar: queda lo de la primera vuelta, marcado
+                    for q in por_vista.get(p["vista"], []):
+                        q["sin_verificar_tras_repintar"] = True
+                else:
+                    por_vista[p["vista"]] = [q for q in nuevos if q["id"] == p["vista"]]
     for p in out:
         if por_vista.get(p["vista"]):
             p["revision"] = por_vista[p["vista"]]
