@@ -10,3 +10,4 @@ matplotlib==3.11.2
 contourpy==1.4.0
 ezdxf==1.4.5
 pillow==12.3.0
+reportlab==5.0.1

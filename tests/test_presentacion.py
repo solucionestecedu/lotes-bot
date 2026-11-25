@@ -106,7 +106,7 @@ def test_aerea_con_relieve(tmp_path, caso_chiltiupan):
                                   m, [], lotes_por_lado=(4, 6))
     out = presentacion.generar(str(tmp_path), "ch", t, lot, m, {"acceso_lado": "norte"}, "Chiltiupán", None, None)
     # sin modelo de imagen: la vista 3D exacta del motor en lugar del ambiente, la planta y el técnico
-    assert [o["vista"] for o in out] == ["aerea", "planta", "tecnica"]
+    assert [o["vista"] for o in out] == ["aerea", "planta", "tecnica", "altimetria"]
     assert Image.open(out[0]["ruta"]).size == (presentacion.LADO_LARGO, round(presentacion.LADO_LARGO * 9 / 16))
 
 
@@ -126,7 +126,7 @@ def test_ambiente_es_libre_y_no_lleva_medidas(tmp_path, caso_chiltiupan):
         return _png(_repintar(Image.open(io.BytesIO(png)).convert("RGB")))
 
     out = presentacion.generar(str(tmp_path), "ch", t, lot, m, {"acceso_lado": "norte"}, "Chiltiupán", None, pintor)
-    assert [o["vista"] for o in out] == ["ambiente", "planta", "tecnica"]
+    assert [o["vista"] for o in out] == ["ambiente", "planta", "tecnica", "altimetria"]
     assert out[0]["ia"]
     amb = next(v for v in vistos if v.startswith(presentacion.INSTRUCCION_AMBIENTE))
     # le dice dónde va la entrada y cuántas casas van de cada lado (las del motor)
@@ -166,8 +166,10 @@ def test_entregables_traen_presentacion_y_hoja_en_pdf(tmp_path):
     out = ag.atender(s, "lamina")
     res = json.loads(out[0]["texto"][len("RESULTADO "):]) if out[0]["texto"].startswith("RESULTADO ") else None
     archivos = [o for o in out if o["tipo"] == "archivo"]
-    assert archivos[0]["nombre"].endswith("presentacion-planta.jpg") and archivos[0]["imagen"]
-    pdf = next(a["ruta"] for a in archivos if a["nombre"].endswith(".pdf"))
+    assert archivos[0]["nombre"].endswith("resumen-ejecutivo.pdf")  # sin ubicación: resumen, técnico, lámina..., planta
+    assert archivos[-1]["nombre"].endswith("presentacion-planta.jpg") and archivos[-1]["imagen"]
+    assert archivos[-1]["titulo"].startswith("Carpeta comercial")
+    pdf = next(a["ruta"] for a in archivos if a["nombre"].endswith(".pdf") and "resumen" not in a["nombre"])
     paginas = PdfReader(pdf).pages
     assert len(paginas) == 3 and "PLANO DE PRESENTACIÓN" in paginas[2].extract_text().upper()
     if res:

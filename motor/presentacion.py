@@ -1073,12 +1073,15 @@ def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | 
     - planta: el trazo exacto pintado por la IA (revisado), con linderos, medidas y letreros del motor.
     - tecnica: lámina de arquitecto en grises (marco, cuadros de áreas y de lotes, simbología, cajetín) dibujada solo
       por el motor (motor/plano_tecnico.py, no usa IA).
+    - altimetria: lámina de relieve (pendientes por color, curvas con cota, escurrimiento, perfil de la calle y relieve
+      por lote), solo con relieve (motor/plano_altimetria.py, no usa IA).
     Devuelve [{ruta, nombre, titulo, vista, ia, ...}]."""
     ficha = ficha or {}
     calcos = {}
     for vista, fn in (("ambiente", (lambda: calco_aereo(t, lot, malla)) if malla is not None else None),
                       ("planta", lambda: calco_planta(t, lot, malla, ficha)),
-                      ("tecnica", lambda: None)):
+                      ("tecnica", lambda: None),
+                      ("altimetria", (lambda: None) if malla is not None else None)):
         if fn is None:
             continue
         try:
@@ -1094,10 +1097,18 @@ def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | 
             futuros["planta"] = ex.submit(pintar, calcos["planta"], pintor, INSTRUCCION_PLANTA, 2)
         if "ambiente" in calcos:
             ins = INSTRUCCION_AMBIENTE + guia_ambiente(calcos["ambiente"], lot)
+            try:  # el relieve dicho en términos de la imagen, para que la IA no aplane el terreno
+                from . import altimetria
+
+                dib_a = calcos["ambiente"]
+                barr = altimetria.barrancos(malla, t.puntos) if ficha.get("respetar_barrancos", True) else []
+                ins += altimetria.guia_render(malla, t.puntos, dib_a.a_px, *dib_a.imagen.size, barr)
+            except Exception:  # noqa: BLE001
+                log.exception("guía de relieve del ambiente")
             futuros["ambiente"] = ex.submit(pintar, calcos["ambiente"], pintor, ins, 1, False)
         pintadas = {v: f.result() for v, f in futuros.items()}
     out = []
-    for vista in ("ambiente", "planta", "tecnica"):
+    for vista in ("ambiente", "planta", "tecnica", "altimetria"):
         if vista not in calcos:
             continue
         dib = calcos[vista]
@@ -1115,12 +1126,18 @@ def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | 
                 img, info = pintadas[vista]
                 final = rotular_planta(img, dib, lot, ficha, proyecto, partes, ia=info["ia"])
                 titulo = "Plano de presentación con medidas (ilustrativo)"
-            else:
+            elif vista == "tecnica":
                 from .plano_tecnico import generar_tecnico
 
                 info = {"ia": False}
                 final = generar_tecnico(t, lot, malla, ficha, proyecto, partes, ubicacion)
                 titulo = "Plano técnico de presentación (lámina)"
+            else:
+                from .plano_altimetria import generar_altimetria
+
+                info = {"ia": False}
+                final = generar_altimetria(t, lot, malla, ficha, proyecto, partes, ubicacion)
+                titulo = "Plano altimétrico: pendientes, curvas de nivel y perfil de la calle"
         except Exception:  # noqa: BLE001
             log.exception("presentación %s", vista)
             continue

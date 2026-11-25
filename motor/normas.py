@@ -146,8 +146,14 @@ def revisar(lot, terreno, malla=None, ficha: dict | None = None) -> list[dict]:
     # 5. Pendiente de calles
     if malla is not None and lot.calles:
         peor = None
-        for c in lot.calles:
-            largo, pend = _pendiente_calle(c, malla.altura)
+        ent, ret = lot.stats.get("entrada_calle"), lot.stats.get("retorno_centro")
+        ejes = None
+        if lot.stats.get("modo") == "calle_central" and ent and ret:  # el eje real de la calle, no la caja que la envuelve
+            from .altimetria import pendiente_eje
+
+            largo_, _, pend_ = pendiente_eje(malla, LineString([ent, ret]))
+            ejes = [(largo_, pend_)]
+        for largo, pend in ejes or [_pendiente_calle(c, malla.altura) for c in lot.calles]:
             if not math.isfinite(pend):
                 continue
             lim = next((l for d, l in LIMITES_PENDIENTE_CALLE if largo <= d), None)
@@ -195,6 +201,13 @@ def revisar(lot, terreno, malla=None, ficha: dict | None = None) -> list[dict]:
         filas.append(_fila("Lotes con pendiente > 30 %", "RLUC Art. 49 (taludes y muros)", "terrazas con muro o talud 1.5:1",
                            f"{inclinados} de {n}", "cumple" if inclinados == 0 else "revisar",
                            "Cortes o rellenos de más de 1 m entre lotes requieren muro o talud."))
+
+    # 8b. Caídas fuertes que se dejaron fuera de los lotes (criterio de diseño)
+    if malla is not None and ficha.get("barrancos_m2"):
+        filas.append(_fila("Caídas fuertes (pendiente > 50 %)", "Criterio de diseño", "no lotificar",
+                           f"{ficha['barrancos_m2']:,.0f} m² fuera de los lotes", "cumple",
+                           "Se dejan como área verde o de protección. Con relieve satelital el borde es aproximado: "
+                           "el topógrafo debe marcar el borde real del barranco."))
 
     # 9. Acceso
     if lot.stats.get("calles_desconectadas"):

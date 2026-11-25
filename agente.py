@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass, field
 
 import config
-from motor import colindancia, exportar, lamina, modelo3d, normas, presentacion, proyeccion, relieve
+from motor import altimetria, colindancia, exportar, lamina, modelo3d, normas, presentacion, proyeccion, relieve
 from motor.calle_central import lindero_comun, lotificar_calle_central
 from motor.lotificacion import (LADOS, ErrorLotificacion, Parametros, franja_de_proteccion, lotificar,
                                 punto_de_acceso)
@@ -273,11 +273,20 @@ FLUJO:
    (qué cumple, qué no, qué falta revisar, con su artículo). Con calle central di cuántos lotes quedan de cada lado (o de
    cada terreno), su área y frente, y la alternativa que traiga "alternativas" (por ejemplo con 4 en vez de 5). Si algo no cumple, propone cómo arreglarlo y pregunta antes
    de rehacer.
-6. ENTREGABLES → generar_entregables: imagen de ambiente (vista aérea pintada con IA, ilustrativa y no a escala),
-   plano de presentación con medidas, plano técnico, lámina PDF con el cuadro de cumplimiento, KML, DXF 2D y DXF 3D.
-   Pide nombre del proyecto y municipio si no los tienes. Di en una línea que la imagen de ambiente es solo para
-   dar idea del proyecto (la IA la pinta libre) y que las medidas y áreas están en los planos y la lámina, que son del
-   motor; si la planta tiene "pintada_con_ia" en false, solo menciona que salió con el trazo del motor.
+6. ENTREGABLES → generar_entregables. Salen en tres partes y en este orden:
+   a) RESUMEN EJECUTIVO (PDF): cuadro general de áreas por terreno en m² y v², verificación de cada plano, lotes con su
+      relieve, calle y servicios, relieve, cumplimiento, opciones legales a validar con notario y siguientes pasos.
+   b) CARPETA TÉCNICA: plano técnico (planimetría con medidas), plano altimétrico (pendientes, curvas de nivel, perfil
+      de la calle y relieve por lote), lámina PDF con el cuadro de cumplimiento, DXF 2D y 3D y KML.
+   c) CARPETA COMERCIAL: imagen de ambiente (vista aérea pintada con IA, ilustrativa y no a escala, que respeta hacia
+      dónde baja el terreno) y plano de presentación con medidas.
+   Pide nombre del proyecto y municipio si no los tienes. Di en una línea que la imagen de ambiente es solo para dar
+   idea del proyecto y que las medidas y áreas están en el resumen y la carpeta técnica, que son del motor. Si el
+   resumen trae "avisos" (un plano cuyo cuadro no cuadra con su área), dilo primero y claro. Si la planta tiene
+   "pintada_con_ia" en false, solo menciona que salió con el trazo del motor.
+   RELIEVE: con relieve, el prediseño deja fuera de los lotes las caídas fuertes (más de 50 %: barrancos, taludes de
+   quebrada) y da pendiente y desnivel de cada lote. Si el usuario quiere lotificar también esas caídas, guarda en la
+   ficha respetar_barrancos=false y vuelve a prediseñar.
 
 MÁXIMO APROVECHAMIENTO (lo que buscan los desarrolladores):
 - predisenar ya lo hace por defecto: pone el área verde en la tierra menos vendible (la franja de la quebrada cuenta como
@@ -599,7 +608,11 @@ class Agente:
                                          "areas_por_terreno_m2": [round(t.area, 2) for t in cands],
                                          "problemas_de_los_originales": problemas})
         cx, cy = u.centroide()
-        s.partes = [{"origen": t.origen, "anillo": [[x - cx, y - cy] for x, y in t.puntos]} for t in colocados]
+        orig = {c.origen: c for c in cands}
+        s.partes = [{"origen": t.origen, "anillo": [[x - cx, y - cy] for x, y in t.puntos],
+                     # para el resumen ejecutivo: lo que dice el plano contra lo que da su cuadro de rumbos
+                     "area_declarada": orig.get(t.origen, t).area_declarada, "cierre": round(orig.get(t.origen, t).cierre, 3),
+                     "area_cuadro": round(orig.get(t.origen, t).area, 2)} for t in colocados]
         lc = lindero_comun(colocados[0].puntos, colocados[1].puntos) if len(colocados) == 2 else None
         s.lindero = [[x - cx, y - cy] for x, y in lc] if lc else None
         if lc:
@@ -688,7 +701,24 @@ class Agente:
                 excluir.append(franja)
             prot.append({"tipo": q.get("tipo"), "lado": q.get("lado"), "profundidad": q.get("profundidad_m"),
                          "ancho": round(ancho, 2)})
+        # caídas fuertes (barrancos, taludes de quebrada) según el relieve: no se lotifican
+        barr_m2 = 0.0
+        m = s.get_malla()
+        if m is not None and f.get("respetar_barrancos", True):
+            try:
+                barr = altimetria.barrancos(m, t.puntos)
+            except Exception:  # noqa: BLE001
+                log.exception("barrancos")
+                barr = []
+            if barr:
+                from shapely.ops import unary_union
+
+                previo = unary_union(excluir) if excluir else None
+                zona_b = unary_union(barr)
+                barr_m2 = (zona_b.difference(previo) if previo is not None else zona_b).area  # lo que no cubría la franja
+                excluir.extend(barr)
         ficha_normas = {"zona": zona, "tipo": f.get("tipo"), "protecciones": prot, "cerrado": f.get("cerrado"),
+                        "barrancos_m2": barr_m2,
                         "figura": f.get("figura"),
                         "quebrada_sin_datos": (any(c.get("tipo") in ("quebrada", "rio") for c in f.get("del_plano", []))
                                                and not f.get("quebradas") and not f.get("sin_quebradas"))}
@@ -716,6 +746,7 @@ class Agente:
             sobre = {"terreno_mas_grande": "mayor", "terreno_mas_chico": "menor"}.get(sobre, "lindero")
             r = lotificar_calle_central(t.puntos, P, m, excluir, eje=eje, lotes_por_lado=rango or (4, 5), partes=partes,
                                         calle_sobre=sobre)
+            altimetria.enriquecer(r, m)
             filas = normas.revisar(r, t, m, fn)
             s.cumplimiento = filas
             return r, filas
@@ -725,6 +756,7 @@ class Agente:
             if claro and r.stats["area_equipamiento"] < req - 0.5:
                 P.equipamiento_m2 = req
                 r = lotificar(t.puntos, P, m, excluir)
+        altimetria.enriquecer(r, m)
         filas = normas.revisar(r, t, m, fn)
         s.cumplimiento = filas
         return r, filas
@@ -837,10 +869,16 @@ class Agente:
             if st.get("calle_dentro_de"):
                 out["calle_dentro_de"] = st["calle_dentro_de"]
             out["lotes_detalle"] = [{"lote": l["id"], "terreno": l.get("terreno"), "area_m2": _r(l["area"], 1),
-                                     "frente_m": _r(l["frente"], 1)} for l in r.lotes]
+                                     "frente_m": _r(l["frente"], 1),
+                                     **({"pendiente_media_pct": l["relieve"]["pend_media"],
+                                         "desnivel_m": l["relieve"]["desnivel"], "cae_hacia": l["relieve"]["cae_hacia"]}
+                                        if l.get("relieve") else {})} for l in r.lotes]
             out.pop("orientacion_calles_grados", None)
         if s.malla:
             out["lotes_con_pendiente_mayor_30pct"] = inclinados
+            barr = next((f_ for f_ in filas if f_["regla"].startswith("Caídas fuertes")), None)
+            if barr:
+                out["barrancos_fuera_de_lotes"] = barr["proyecto"]
             out["pendiente_media_de_calles_pct"] = _r(st["pendiente_calles_pct"], 1)
         else:
             out["nota"] = "Sin relieve: el prediseño no consideró pendientes."
@@ -865,7 +903,7 @@ class Agente:
         presentacion_ = []
         if lot is not None:
             cx, cy = t.centroide()
-            partes = [{"origen": p["origen"], "anillo": [(x + cx, y + cy) for x, y in p["anillo"]]} for p in s.partes]
+            partes = [{**p, "anillo": [(x + cx, y + cy) for x, y in p["anillo"]]} for p in s.partes]
             try:
                 presentacion_ = presentacion.generar(carpeta, base, t, lot, m if t.ubicado else None, s.ficha, nombre,
                                                      partes or None, getattr(self.llm, "pintar", None),
@@ -885,7 +923,7 @@ class Agente:
             kml = os.path.join(carpeta, f"{base}.kml")
             with open(kml, "w", encoding="utf-8") as f:
                 f.write(exportar.kml(nombre, t, cs, lot))
-            archivos.append((kml, "Para abrir en Google Earth"))
+            archivos.append((kml, "Ubicación para Google Earth (KML)"))
         dxf = os.path.join(carpeta, f"{base}.dxf")
         exportar.dxf(dxf, t, cs, lot)
         archivos.append((dxf, "Plano 2D para AutoCAD / Civil 3D (coordenadas Lambert SIRGAS)"))
@@ -899,19 +937,53 @@ class Agente:
             dxf3d = os.path.join(carpeta, f"{base}-3d.dxf")
             modelo3d.dxf(dxf3d, escena)
             archivos.append((dxf3d, "Modelo 3D para AutoCAD: terreno, lotes, calles y casas tipo (vista Realista → Render)"))
-        for p in reversed(presentacion_):
-            archivos.insert(0, (p["ruta"], p["titulo"]))
+        # tres partes: resumen ejecutivo, carpeta técnica y carpeta comercial
+        comercial = [(p["ruta"], p["titulo"]) for p in presentacion_ if p["vista"] in ("ambiente", "aerea", "planta")]
+        tecnica = [(p["ruta"], p["titulo"]) for p in presentacion_ if p["vista"] in ("tecnica", "altimetria")]
+        for ruta, titulo in archivos:
+            (comercial if ruta.endswith("-vista-3d.jpg") else tecnica).append((ruta, titulo))
+        archivos = []
+        avisos = []
+        if lot is not None:
+            try:
+                from motor.resumen import generar_resumen, recortar_dibujo
+
+                tec = next((p["ruta"] for p in presentacion_ if p["vista"] == "tecnica"), None)
+                img_res = recortar_dibujo(tec, os.path.join(carpeta, "_dibujo.jpg")) if tec else None
+                entrega = {"Carpeta técnica": [_nombre_corto(t_) for _, t_ in tecnica],
+                           "Carpeta comercial": [_nombre_corto(t_) for _, t_ in comercial]}
+                rpdf = os.path.join(carpeta, f"{base}-resumen-ejecutivo.pdf")
+                cx, cy = t.centroide()
+                partes_r = [{**p, "anillo": [(x + cx, y + cy) for x, y in p["anillo"]]} for p in s.partes] or None
+                res = generar_resumen(rpdf, t, lot, m if t.ubicado else None, s.ficha, nombre, partes_r,
+                                      s.proyecto.get("ubicacion", ""), filas, img_res, entrega)
+                avisos = res["avisos"]
+                archivos.append((rpdf, "Resumen ejecutivo (PDF): áreas, lotes, calle, relieve, normas y siguientes pasos"))
+            except Exception:  # noqa: BLE001
+                log.exception("resumen ejecutivo")
+        archivos += [(r_, f"Carpeta técnica · {t_}") for r_, t_ in tecnica]
+        archivos += [(r_, f"Carpeta comercial · {t_}") for r_, t_ in comercial]
         for ruta, titulo in archivos:
             salidas.append({"tipo": "archivo", "ruta": ruta, "nombre": os.path.basename(ruta), "titulo": titulo,
                             "imagen": ruta.endswith(".jpg")})
         out = {"ok": True, "archivos_enviados": [os.path.basename(a) for a, _ in archivos], "escala": f"1:{info['escala']:,}",
+               "partes": {"resumen_ejecutivo": 1 if any(a.endswith("-resumen-ejecutivo.pdf") for a, _ in archivos) else 0,
+                          "carpeta_tecnica": len(tecnica), "carpeta_comercial": len(comercial)},
                "hojas": info["hojas"], "nota": "Los archivos se envían automáticamente después de tu mensaje."}
+        if avisos:
+            out["avisos"] = avisos
         if presentacion_:
             out["presentacion"] = [{"vista": p["vista"], "pintada_con_ia": p["ia"], **({"motivo": p["motivo"]} if p.get("motivo") else {})}
                                    for p in presentacion_]
             out["nota_presentacion"] = ("La imagen de ambiente es ilustrativa y no a escala (la IA la pinta libre). Los "
                                         "planos de presentación y la lámina llevan el trazo y los números del motor.")
         return out
+
+
+def _nombre_corto(titulo: str) -> str:
+    """'Plano altimétrico: pendientes, ...' -> 'plano altimétrico'."""
+    t = re.split(r"[:(]", titulo)[0].strip()
+    return t[:1].lower() + t[1:]
 
 
 def _slug(texto: str) -> str:

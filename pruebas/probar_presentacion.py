@@ -15,7 +15,7 @@ sys.path.insert(0, RAIZ)
 sys.path.insert(0, os.path.join(RAIZ, "tests"))
 
 from agente import Agente, Sesion  # noqa: E402
-from motor import presentacion  # noqa: E402
+from motor import presentacion, resumen  # noqa: E402
 from servicios.llm import GeminiLLM  # noqa: E402
 from test_calle_central import GuionQuintas  # noqa: E402
 
@@ -35,10 +35,11 @@ def main():
     print("relieve:", r.get("ok"), r.get("fuente"), r.get("desnivel_m"), flush=True)
     ag.atender(s, "quintas")
     print("prediseño:", json.loads(ag.atender(s, "lotes")[0]["texto"])["lotes"], "lotes", flush=True)
+    s.partes[1]["area_declarada"] = 6220.08  # lo que dice el plano del terreno B (su cuadro de rumbos no cuadra)
     t, m = s.get_terreno(), s.get_malla()
-    lot, _ = ag._lotificar(s)
+    lot, filas = ag._lotificar(s)
     cx, cy = t.centroide()
-    partes = [{"origen": p["origen"], "anillo": [(x + cx, y + cy) for x, y in p["anillo"]]} for p in s.partes]
+    partes = [{**p, "anillo": [(x + cx, y + cy) for x, y in p["anillo"]]} for p in s.partes]
     for modelo in modelos:
         carpeta = f"/tmp/presentacion/{modelo}"
         os.makedirs(carpeta, exist_ok=True)
@@ -53,7 +54,16 @@ def main():
         else:
             pintor = GeminiLLM(os.environ["GEMINI_API_KEY"], "gemini-3.8-flash", "gemini-3.8-flash", modelo_imagen=modelo).pintar
         t0 = time.time()
-        out = presentacion.generar(carpeta, "quintas", t, lot, m, s.ficha, "Quintas A y B", partes, pintor)
+        ubic = "Cantón San Antonio Abad, San Salvador"
+        out = presentacion.generar(carpeta, "quintas", t, lot, m, s.ficha, "Quintas A y B", partes, pintor, ubic)
+        tec = next((o["ruta"] for o in out if o["vista"] == "tecnica"), None)
+        dib = resumen.recortar_dibujo(tec, os.path.join(carpeta, "_dibujo.jpg")) if tec else None
+        r = resumen.generar_resumen(os.path.join(carpeta, "quintas-resumen-ejecutivo.pdf"), t, lot, m, s.ficha,
+                                    "Quintas A y B", partes, ubic, filas, dib,
+                                    {"Carpeta técnica": ["plano técnico (planimetría)", "plano altimétrico", "lámina en PDF",
+                                                         "DXF 2D y 3D", "KML"],
+                                     "Carpeta comercial": ["imagen de ambiente", "plano de presentación con medidas"]})
+        print("resumen:", r["paginas"], "páginas · avisos:", r["avisos"])
         print(f"\n=== {modelo} ({time.time() - t0:.0f} s) ===")
         for o in out:
             print(f"  {o['vista']}: pintada con IA = {o['ia']} · coincidencia {o.get('coincidencia')} "
