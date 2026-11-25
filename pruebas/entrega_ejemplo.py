@@ -25,13 +25,15 @@ ESQUINA = (473280.676, 289049.929)
 SALIDA = "/tmp/entrega-quintas"
 
 
-def main():
-    modelo = (sys.argv[1:] or ["gemini-nano-banana-2.1"])[0]
+def preparar(modelo: str | None = None):
+    """Quintas A+B ubicado con la esquina del plano, con relieve real y prediseño. Sin `modelo`, sin IA."""
     ag = Agente(GuionQuintas(), "/tmp/entrega-quintas-_agente")
-    gem = GeminiLLM(os.environ["GEMINI_API_KEY"], "gemini-3.8-flash", "gemini-3.8-flash", modelo_imagen=modelo,
-                    modelo_revisor=os.environ.get("MODELO_REVISOR", "gemini-3.8-flash"))
-    ag.llm.pintar = gem.pintar
-    ag.llm.revisar = gem.revisar
+    if modelo:
+        gem = GeminiLLM(os.environ["GEMINI_API_KEY"], "gemini-3.8-flash", "gemini-3.8-flash", modelo_imagen=modelo,
+                        modelo_revisor=os.environ.get("MODELO_REVISOR", "gemini-3.8-flash"))
+        ag.llm.pintar = gem.pintar
+        ag.llm.revisar = gem.revisar
+        ag.llm.pensar = gem.pensar
     s = Sesion("ejemplo")
     ag.atender(s, "plano", [{"mime": "image/jpeg", "nombre": "p.jpg", "datos": b"x"}])
     ag.atender(s, "unir")
@@ -53,6 +55,11 @@ def main():
     ag.atender(s, "quintas")
     pre = json.loads(ag.atender(s, "lotes")[0]["texto"])
     print("prediseño:", pre["lotes"], "lotes ·", pre.get("barrancos_fuera_de_lotes", "sin caídas fuertes fuera"), flush=True)
+    return ag, s
+
+
+def main():
+    ag, s = preparar((sys.argv[1:] or ["gemini-nano-banana-2.1"])[0])
     t0 = time.time()
     salidas = []
     out = ag.h_generar_entregables(s, nombre_proyecto="Quintas A y B",
