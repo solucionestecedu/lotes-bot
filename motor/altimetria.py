@@ -304,6 +304,7 @@ def plataformas(lot, malla: Malla, retiro_fondo: float = 3.0, margen_lado: float
 RAMPA_MAX = 1.5      # m que puede subir o bajar la terraza de la casa respecto a la calle (rampa lateral de ≤ 15 %)
 ESCALON_JARDIN = 2.5  # desnivel natural máximo dentro de una terraza de jardín antes de partirla en otra
 MURO_ESTRUCTURAL = 3.0  # muros más altos que esto piden diseño estructural
+ANCHO_MIN_TERRAZA = 3.0  # m: en ladera muy fuerte el jardín se hace en bancales, pero ninguno más angosto que esto
 
 
 def _banda(poly: Polygon, base, vx, vy, s0: float, s1: float, largo: float, w0: float | None = None,
@@ -335,7 +336,7 @@ def _cortes_ancho(malla, poly, base, vx, vy, s0, s1, w0, w1, largo) -> list[floa
         return [w0, w1]
     zs = _muestras(malla, g, n=60)[2]
     caida = float(np.nanmax(zs) - np.nanmin(zs)) if len(zs) else 0.0
-    k = int(min(3, max(1, math.ceil(caida / ESCALON_JARDIN)), max(1, (w1 - w0) // 4)))
+    k = int(min(6, max(1, math.ceil(caida / ESCALON_JARDIN)), max(1, (w1 - w0) // ANCHO_MIN_TERRAZA)))
     return [w0 + (w1 - w0) * i / k for i in range(k + 1)]
 
 
@@ -386,7 +387,8 @@ def terrazas(lot, malla: Malla) -> list[dict]:
             if not resto.is_empty and resto.area > 25:
                 zs_r = _muestras(malla, resto, n=150)[2]
                 caida = float(np.nanmax(zs_r) - np.nanmin(zs_r))
-                k = int(min(4, max(1, math.ceil(caida / ESCALON_JARDIN))))
+                k = int(min(12, max(1, math.ceil(caida / ESCALON_JARDIN)),
+                            max(1, (prof_lote + 1 - corte_casa) // ANCHO_MIN_TERRAZA)))
                 paso = (prof_lote + 1 - corte_casa) / k
                 filas += [(corte_casa + i * paso, corte_casa + (i + 1) * paso) for i in range(k)]
             else:
