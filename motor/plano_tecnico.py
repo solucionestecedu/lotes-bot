@@ -208,9 +208,10 @@ def generar_tecnico(t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict
     lado_q = next((str(q["lado"]).lower() for q in ficha.get("quebradas") or [] if str(q.get("lado", "")).lower() in LADOS),
                   None)
     if lot.protecciones and lado_q:
-        bordes = _bordes_hacia(prop, lado_q, tolerancia=50)
-        if bordes:
-            orilla = linemerge(unary_union([LineString(b) for b in bordes]))
+        from .lotificacion import orilla_hacia
+
+        orilla = orilla_hacia(prop, lado_q)  # la misma orilla que la franja de protección
+        if orilla is not None and not orilla.is_empty:
             cauce = []
             for g in getattr(orilla, "geoms", [orilla]):
                 try:

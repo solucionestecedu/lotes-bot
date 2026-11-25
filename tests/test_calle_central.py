@@ -66,7 +66,7 @@ def test_calle_en_medio_con_lotes_a_cada_lado(union):
     # nada se pierde: lotes + calle + verde + protección + remanentes = terreno
     suma = st["area_util"] + st["area_circulacion"] + st["area_verde"] + st["area_proteccion"] + st["area_remanente"]
     assert suma == pytest.approx(u.area, abs=2.0)
-    assert st["area_util"] / u.area > 0.75
+    assert st["area_util"] / u.area > 0.72  # con la franja de la quebrada a lo largo de toda la orilla
 
 
 def test_rango_fijo_y_alternativas(union):
@@ -162,9 +162,34 @@ def test_reparto_parejo_por_lado():
         areas = [lot.lotes[i - 1]["area"] for i in pl["ids"]]
         assert max(areas) <= 1.03 * min(areas), (pl["terreno"], areas)
         assert all(lot.lotes[i - 1]["frente"] >= fmin - 0.01 for i in pl["ids"])
-    assert any(pl["reparto"] == "parejo" for pl in lot.stats["por_lado"])
+    # (con la franja de la quebrada completa ya no sobra tierra detrás del área verde: los lotes salen parejos
+    # sin necesidad de girar los cortes, así que "reparto" puede quedar normal)
     # los lotes no se enciman entre sí
     polys = [l["poly"] for l in lot.lotes]
     for i, a in enumerate(polys):
         for b in polys[i + 1:]:
             assert a.intersection(b).area < 0.5
+
+
+def test_franja_de_quebrada_cubre_toda_la_orilla(tmp_path):
+    """Error que encontró el usuario: la franja solo cubría el tramo más grande de la orilla y el lote 9 quedaba pegado
+    a la quebrada sin protección. Ningún lote puede quedar a menos de 1.5 × profundidad de la orilla."""
+    from shapely.geometry import Polygon
+
+    from motor.lotificacion import orilla_hacia
+
+    ag = Agente(GuionQuintas(), str(tmp_path))
+    s = Sesion("f")
+    ag.atender(s, "plano", [{"mime": "image/jpeg", "nombre": "p.jpg", "datos": b"x"}])
+    ag.atender(s, "unir")
+    ag.atender(s, "quintas")
+    lot, _ = ag._lotificar(s)
+    from motor.lotificacion import franja_de_proteccion
+
+    q = s.ficha["quebradas"][0]
+    poly = Polygon(s.get_terreno().puntos).buffer(0)
+    orilla = orilla_hacia(poly, q["lado"])
+    franja = franja_de_proteccion(s.get_terreno().puntos, q["lado"], 1.5 * q["profundidad_m"])
+    assert orilla.within(franja.buffer(0.5))  # la franja va a lo largo de toda la orilla, no solo del tramo mayor
+    for l in lot.lotes:
+        assert l["poly"].intersection(franja).area < 0.5, f"el lote {l['id']} invade la franja"

@@ -196,16 +196,50 @@ def punto_de_acceso(anillo, lado: str) -> tuple[float, float] | None:
     return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
 
 
-def franja_de_proteccion(anillo, lado: str, ancho: float) -> Polygon | None:
-    """Franja de `ancho` metros hacia adentro del terreno, a lo largo del lindero que da hacia `lado`."""
+def orilla_hacia(poly: Polygon, lado: str, tolerancia: float = 50.0, puente: float = 25.0):
+    """Orilla de la quebrada: la cadena del lindero que mira hacia `lado`, sin cortes. Además de los tramos que miran
+    hacia allá entran los que quedan entre dos de ellos si son cortos o no miran al revés: la quebrada sigue su curso
+    aunque el lindero quiebre. Es la única fuente para la franja de protección, el cauce dibujado y el 3D."""
     from shapely.geometry import LineString
+    from shapely.geometry.polygon import orient
+    from shapely.ops import linemerge
 
-    poly = Polygon(anillo).buffer(0)
-    bordes = _bordes_hacia(poly, lado)
-    if not bordes or ancho <= 0:
+    objetivo = LADOS[lado.strip().lower()]
+    pts = list(orient(poly, 1.0).exterior.coords)
+    tramos = [(a, b) for a, b in zip(pts, pts[1:]) if math.dist(a, b) >= 0.05]
+    n = len(tramos)
+    if not n:
         return None
-    franja = unary_union([LineString(e).buffer(ancho, cap_style=2) for e in bordes]).intersection(poly)
-    return _mayor(franja) if franja.geom_type != "Polygon" else franja
+
+    def desvio(a, b):
+        az = math.degrees(math.atan2(b[1] - a[1], -(b[0] - a[0]))) % 360
+        return abs((az - objetivo + 180) % 360 - 180)
+
+    ok = [desvio(a, b) <= tolerancia for a, b in tramos]
+    if not any(ok):
+        return None
+    cambio = True
+    while cambio:
+        cambio = False
+        for i, (a, b) in enumerate(tramos):
+            if not ok[i] and ok[(i - 1) % n] and ok[(i + 1) % n] and (math.dist(a, b) <= puente or desvio(a, b) <= 90):
+                ok[i] = cambio = True
+    return linemerge(unary_union([LineString(tramos[i]) for i in range(n) if ok[i]]))
+
+
+def franja_de_proteccion(anillo, lado: str, ancho: float):
+    """Franja de `ancho` metros hacia adentro del terreno, a lo largo de toda la orilla de la quebrada."""
+    poly = Polygon(anillo).buffer(0)
+    orilla = orilla_hacia(poly, lado)
+    if orilla is None or orilla.is_empty or ancho <= 0:
+        return None
+    franja = orilla.buffer(ancho, cap_style=2).intersection(poly).buffer(0)
+    if franja.is_empty:
+        return None
+    if franja.geom_type != "Polygon":  # se queda todo lo que toca la orilla (antes solo el pedazo más grande)
+        piezas = [g for g in getattr(franja, "geoms", [franja]) if g.geom_type == "Polygon" and g.area > 1.0]
+        franja = unary_union(piezas)
+    return franja
 
 
 def cauce_quebrada(anillo, ficha: dict | None, separacion: float = 7.0):
@@ -219,10 +253,9 @@ def cauce_quebrada(anillo, ficha: dict | None, separacion: float = 7.0):
     if not lado:
         return None
     poly = Polygon(anillo).buffer(0)
-    bordes = _bordes_hacia(poly, lado, tolerancia=50)
-    if not bordes:
+    orilla = orilla_hacia(poly, lado)
+    if orilla is None or orilla.is_empty:
         return None
-    orilla = linemerge(unary_union([LineString(b) for b in bordes]))
     mejor = None
     for g in getattr(orilla, "geoms", [orilla]):
         try:
