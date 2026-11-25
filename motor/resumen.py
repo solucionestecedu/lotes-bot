@@ -67,21 +67,24 @@ def _area_en(geoms, poly: Polygon) -> float:
     return unary_union(g).intersection(poly).area
 
 
-def recortar_dibujo(ruta: str, salida: str) -> str | None:
-    """Del plano técnico, solo el dibujo (sin la columna ni el marco y sin el blanco de sobra), para el resumen."""
+def recortar_dibujo(ruta: str, salida: str, t: Terreno | None = None) -> str | None:
+    """Del plano técnico, solo el terreno y sus letreros (sin la columna, el marco ni la rejilla), para el resumen."""
     from PIL import Image, ImageChops
 
-    from .plano_tecnico import COLUMNA, MARGEN
+    from .plano_tecnico import COLUMNA, MARGEN, caja_terreno_px
 
     try:
         im = Image.open(ruta).convert("RGB")
         W, H = im.size
-        im = im.crop((MARGEN + 10, MARGEN + 10, W - MARGEN - COLUMNA - 4, H - MARGEN - 10))
-        caja = ImageChops.difference(im, Image.new("RGB", im.size, (255, 255, 255))).convert('L').point(lambda v: 255 if v > 40 else 0).getbbox()
-        if caja:
-            pad = 14
-            im = im.crop((max(0, caja[0] - pad), max(0, caja[1] - pad), min(im.width, caja[2] + pad),
-                          min(im.height, caja[3] + pad)))
+        if t is not None:
+            im = im.crop(caja_terreno_px(t))
+        else:
+            im = im.crop((MARGEN + 10, MARGEN + 10, W - MARGEN - COLUMNA - 4, H - MARGEN - 10))
+            caja = ImageChops.difference(im, Image.new("RGB", im.size, (255, 255, 255))).convert("L").point(
+                lambda v: 255 if v > 40 else 0).getbbox()
+            if caja:
+                im = im.crop((max(0, caja[0] - 14), max(0, caja[1] - 14), min(im.width, caja[2] + 14),
+                              min(im.height, caja[3] + 14)))
         im.save(salida, "JPEG", quality=88)
         return salida
     except Exception:  # noqa: BLE001

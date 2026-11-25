@@ -949,7 +949,7 @@ class Agente:
                 from motor.resumen import generar_resumen, recortar_dibujo
 
                 tec = next((p["ruta"] for p in presentacion_ if p["vista"] == "tecnica"), None)
-                img_res = recortar_dibujo(tec, os.path.join(carpeta, "_dibujo.jpg")) if tec else None
+                img_res = recortar_dibujo(tec, os.path.join(carpeta, "_dibujo.jpg"), t) if tec else None
                 entrega = {"Carpeta técnica": [_nombre_corto(t_) for _, t_ in tecnica],
                            "Carpeta comercial": [_nombre_corto(t_) for _, t_ in comercial]}
                 rpdf = os.path.join(carpeta, f"{base}-resumen-ejecutivo.pdf")

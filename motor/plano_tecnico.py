@@ -90,6 +90,22 @@ def terrenos_unidos(prop: Polygon, partes: list | None) -> list[dict]:
     return out
 
 
+def caja_terreno_px(t: Terreno, margen_px: float = 125.0) -> tuple[int, int, int, int]:
+    """Rectángulo (en px de la lámina) que ocupa el terreno en el dibujo, con un margen para sus letreros."""
+    W, H = W_HOJA, H_HOJA
+    dx0, dy0 = MARGEN + 18, MARGEN + 18
+    dx1, dy1 = W - MARGEN - COLUMNA - 18, H - MARGEN - 18
+    prop = Polygon(t.puntos).buffer(0)
+    x0, y0, x1, y1 = prop.bounds
+    mg = max(14.0, 0.09 * max(x1 - x0, y1 - y0))
+    k = min((dx1 - dx0) / (x1 - x0 + 2 * mg), (dy1 - dy0) / (y1 - y0 + 2 * mg))
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    ox, oy = (dx0 + dx1) / 2, (dy0 + dy1) / 2
+    a, b = (ox + (x0 - cx) * k, oy - (y1 - cy) * k), (ox + (x1 - cx) * k, oy - (y0 - cy) * k)
+    return (int(max(dx0 - 10, a[0] - margen_px)), int(max(dy0 - 10, a[1] - margen_px)),
+            int(min(dx1 + 10, b[0] + margen_px)), int(min(dy1 + 10, b[1] + margen_px)))
+
+
 def generar_tecnico(t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict | None, proyecto: str,
                     partes: list | None = None, ubicacion: str = "") -> Image.Image:
     from .presentacion import _anillos, _caja_girada, _fmt, _puntos_dentro, _tramos

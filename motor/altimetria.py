@@ -135,14 +135,18 @@ def barrancos(malla: Malla, anillo, umbral: float = PEND_BARRANCO, area_min: flo
     for z in zonas(malla, terreno, umbral, area_min=area_min):
         if z.intersects(borde):
             z = z.buffer(2.0, join_style=1).buffer(-2.0, join_style=1).intersection(terreno)
-            cands += [q for q in getattr(z, "geoms", [z]) if q.geom_type == "Polygon" and q.area >= area_min]
+            cands += [q for q in getattr(z, "geoms", [z]) if q.geom_type == "Polygon" and q.area >= area_min
+                      and q.intersects(terreno.exterior.buffer(1.0))]  # que de verdad llegue al lindero
     out, quitado = [], 0.0
+    hoyos0 = len(terreno.interiors)
     for z in sorted(cands, key=lambda q: -q.area):
         if quitado + z.area > tope * terreno.area:
             continue
         resto = terreno.difference(unary_union(out + [z]))
-        piezas = sorted((q.area for q in getattr(resto, "geoms", [resto]) if q.geom_type == "Polygon"), reverse=True)
-        if not piezas or piezas[0] < 0.97 * resto.area:  # dejaría pedazos sueltos
+        piezas = sorted((q for q in getattr(resto, "geoms", [resto]) if q.geom_type == "Polygon"), key=lambda q: -q.area)
+        if not piezas or piezas[0].area < 0.97 * resto.area:  # dejaría pedazos sueltos
+            continue
+        if len(piezas[0].interiors) > hoyos0:  # dejaría un hoyo adentro de los lotes
             continue
         out.append(z)
         quitado += z.area

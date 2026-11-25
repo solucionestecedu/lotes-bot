@@ -109,3 +109,13 @@ def test_resumen_ejecutivo_cuadra_por_terreno_y_avisa_el_plano_que_no_cierra(tmp
     assert len(r["avisos"]) == 1 and "Lote B" in r["avisos"][0] and "1,808.86" in r["avisos"][0]
     texto = " ".join(p.extract_text() for p in PdfReader(r["ruta"]).pages)
     assert "Cuadro general de áreas" in texto and "Verificación de los planos" in texto and "Revisar" in texto
+
+
+def test_caida_adentro_no_deja_hoyos_en_los_lotes():
+    """Una mancha empinada que no llega al lindero no se saca: dejaría un hoyo adentro de un lote."""
+    x0, y0, dx, nx, ny = malla_para(RECT, 5.0, 30.0)
+    z = np.array([[500 + 0.1 * (y0 + j * dx) - 12.0 * math.exp(-(((x0 + i * dx) - 60) ** 2 + ((y0 + j * dx) - 50) ** 2) / 120)
+                   for i in range(nx)] for j in range(ny)])
+    m = Malla(x0, y0, dx, nx, ny, z, "archivo")
+    assert altimetria.zonas(m, Polygon(RECT), 50)  # sí hay una zona empinada adentro
+    assert altimetria.barrancos(m, RECT) == []

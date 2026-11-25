@@ -9,4 +9,4 @@ export GEMINI_API_KEY="$(gcloud secrets versions access latest --secret GEMINI_A
 rm -f /tmp/entrega-quintas.zip
 (cd /tmp && zip -qr entrega-quintas.zip entrega-quintas)
 ls -la /tmp/entrega-quintas.zip
-cloudshell download /tmp/entrega-quintas.zip
+cp /tmp/entrega-quintas.zip ~/ && cloudshell download ~/entrega-quintas.zip  # solo baja lo que está en el home

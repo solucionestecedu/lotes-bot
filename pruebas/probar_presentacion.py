@@ -57,7 +57,7 @@ def main():
         ubic = "Cantón San Antonio Abad, San Salvador"
         out = presentacion.generar(carpeta, "quintas", t, lot, m, s.ficha, "Quintas A y B", partes, pintor, ubic)
         tec = next((o["ruta"] for o in out if o["vista"] == "tecnica"), None)
-        dib = resumen.recortar_dibujo(tec, os.path.join(carpeta, "_dibujo.jpg")) if tec else None
+        dib = resumen.recortar_dibujo(tec, os.path.join(carpeta, "_dibujo.jpg"), t) if tec else None
         r = resumen.generar_resumen(os.path.join(carpeta, "quintas-resumen-ejecutivo.pdf"), t, lot, m, s.ficha,
                                     "Quintas A y B", partes, ubic, filas, dib,
                                     {"Carpeta técnica": ["plano técnico (planimetría)", "plano altimétrico", "lámina en PDF",
