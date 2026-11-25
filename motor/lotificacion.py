@@ -224,7 +224,8 @@ def orilla_hacia(poly: Polygon, lado: str, tolerancia: float = 50.0, puente: flo
         for i, (a, b) in enumerate(tramos):
             if not ok[i] and ok[(i - 1) % n] and ok[(i + 1) % n] and (math.dist(a, b) <= puente or desvio(a, b) <= 90):
                 ok[i] = cambio = True
-    return linemerge(unary_union([LineString(tramos[i]) for i in range(n) if ok[i]]))
+    orilla = unary_union([LineString(tramos[i]) for i in range(n) if ok[i]])
+    return orilla if orilla.geom_type == "LineString" else linemerge(orilla)  # un solo tramo recto: ya es la orilla
 
 
 def franja_de_proteccion(anillo, lado: str, ancho: float):

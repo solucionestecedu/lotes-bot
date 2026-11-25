@@ -294,6 +294,10 @@ FLUJO:
    idea del proyecto y que las medidas y áreas están en el resumen y la carpeta técnica, que son del motor. Si el
    resumen trae "avisos" (un plano cuyo cuadro no cuadra con su área), dilo primero y claro. Si la planta tiene
    "pintada_con_ia" en false, solo menciona que salió con el trazo del motor.
+   REVISIÓN: antes de mandar, el motor revisa la geometría y un revisor con IA revisa las láminas (las vistas con un
+   problema grave se repintan solas una vez). El resultado viene en "revision". Si "geometria" trae algo grave, dilo
+   primero, en una línea, y ofrece corregirlo (volver a prediseñar). De "laminas" menciona solo lo de gravedad "alta"
+   que siga ahí, en pocas palabras y sin dramatizar; lo demás no lo cuentes salvo que pregunten.
    RELIEVE: con relieve, el prediseño deja fuera de los lotes las caídas fuertes (más de 50 %: barrancos, taludes de
    quebrada) y da pendiente y desnivel de cada lote. Si el usuario quiere lotificar también esas caídas, guarda en la
    ficha respetar_barrancos=false y vuelve a prediseñar.
@@ -911,13 +915,24 @@ class Agente:
         base = _slug(nombre)
         # imagen de presentación: el motor traza, el modelo de imagen solo pinta, los letreros los pone el motor
         presentacion_ = []
+        chequeos = []
         if lot is not None:
+            # revisión geométrica del motor (reglas exactas) antes de dibujar nada
+            from motor import revisor
+
+            try:
+                terr = altimetria.terrazas(lot, m) if (m is not None and t.ubicado) else None
+                chequeos = revisor.revisar(t, lot, m, s.ficha, terr)
+            except Exception:  # noqa: BLE001
+                log.exception("revisión geométrica")
             cx, cy = t.centroide()
             partes = [{**p, "anillo": [(x + cx, y + cy) for x, y in p["anillo"]]} for p in s.partes]
             try:
                 presentacion_ = presentacion.generar(carpeta, base, t, lot, m if t.ubicado else None, s.ficha, nombre,
                                                      partes or None, getattr(self.llm, "pintar", None),
-                                                     s.proyecto.get("ubicacion", ""))
+                                                     s.proyecto.get("ubicacion", ""),
+                                                     revisor=getattr(self.llm, "revisar", None),
+                                                     contexto=revisor.contexto_proyecto(lot, s.ficha, chequeos))
             except Exception:  # noqa: BLE001
                 log.exception("imagen de presentación")
         pdf = os.path.join(carpeta, f"{base}.pdf")
@@ -969,6 +984,9 @@ class Agente:
                 res = generar_resumen(rpdf, t, lot, m if t.ubicado else None, s.ficha, nombre, partes_r,
                                       s.proyecto.get("ubicacion", ""), filas, img_res, entrega)
                 avisos = res["avisos"]
+                from motor.revisor import avisos_de_revision
+
+                avisos += avisos_de_revision(chequeos)
                 archivos.append((rpdf, "Resumen ejecutivo (PDF): áreas, lotes, calle, relieve, normas y siguientes pasos"))
             except Exception:  # noqa: BLE001
                 log.exception("resumen ejecutivo")
@@ -1013,6 +1031,19 @@ class Agente:
                "hojas": info["hojas"], "nota": "Los archivos se envían automáticamente después de tu mensaje."}
         if avisos:
             out["avisos"] = avisos
+        revision = {}
+        if chequeos:
+            revision["geometria"] = ([{"chequeo": c["chequeo"], "grave": c["grave"], "detalle": c["detalle"]}
+                                      for c in chequeos if not c["ok"]] or "sin fallas")
+        laminas = [{"vista": p["vista"], **q, **({"repintada": True} if p.get("repintada") else {})}
+                   for p in presentacion_ for q in p.get("revision") or []]
+        if getattr(self.llm, "revisar", None) is not None and presentacion_:
+            revision["laminas"] = laminas or "sin problemas"
+        repintadas = [p["vista"] for p in presentacion_ if p.get("repintada")]
+        if repintadas:
+            revision["vistas_repintadas"] = repintadas
+        if revision:
+            out["revision"] = revision
         if presentacion_:
             out["presentacion"] = [{"vista": p["vista"], "pintada_con_ia": p["ia"], **({"motivo": p["motivo"]} if p.get("motivo") else {})}
                                    for p in presentacion_]

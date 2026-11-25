@@ -28,8 +28,10 @@ SALIDA = "/tmp/entrega-quintas"
 def main():
     modelo = (sys.argv[1:] or ["gemini-nano-banana-2.1"])[0]
     ag = Agente(GuionQuintas(), "/tmp/entrega-quintas-_agente")
-    ag.llm.pintar = GeminiLLM(os.environ["GEMINI_API_KEY"], "gemini-3.8-flash", "gemini-3.8-flash",
-                              modelo_imagen=modelo).pintar
+    gem = GeminiLLM(os.environ["GEMINI_API_KEY"], "gemini-3.8-flash", "gemini-3.8-flash", modelo_imagen=modelo,
+                    modelo_revisor=os.environ.get("MODELO_REVISOR", "gemini-3.8-flash"))
+    ag.llm.pintar = gem.pintar
+    ag.llm.revisar = gem.revisar
     s = Sesion("ejemplo")
     ag.atender(s, "plano", [{"mime": "image/jpeg", "nombre": "p.jpg", "datos": b"x"}])
     ag.atender(s, "unir")
@@ -57,10 +59,14 @@ def main():
                                    ubicacion="Cantón San Antonio Abad, San Salvador", salidas=salidas)
     print(f"entregables en {time.time() - t0:.0f} s:", json.dumps({k: out.get(k) for k in ("partes", "avisos", "presentacion")},
                                                               ensure_ascii=False), flush=True)
+    print("revisión:", json.dumps(out.get("revision"), ensure_ascii=False, indent=1), flush=True)
     shutil.rmtree(SALIDA, ignore_errors=True)
     carpetas = {"Carpeta de prefactibilidad": ".", "Carpeta comercial": "Vistas para reenviar",
                 "Para AutoCAD": "Para AutoCAD y Google Earth", "Resumen": "1 Resumen ejecutivo",
                 "Carpeta técnica": "2 Carpeta tecnica"}
+    os.makedirs(SALIDA, exist_ok=True)
+    with open(os.path.join(SALIDA, "revision.json"), "w", encoding="utf-8") as f:
+        json.dump(out.get("revision"), f, ensure_ascii=False, indent=1)
     for i, o in enumerate(salidas, 1):
         parte = next((v for k, v in carpetas.items() if o["titulo"].startswith(k)), "otros")
         os.makedirs(os.path.join(SALIDA, parte), exist_ok=True)

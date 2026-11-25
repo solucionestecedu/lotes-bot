@@ -1206,7 +1206,8 @@ def rotular_ambiente(img: Image.Image, lot: Resultado, ficha: dict, proyecto: st
 
 # --------------------------------------------------------------------------------------------- todo junto
 def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict | None,
-            proyecto: str, partes: list | None = None, pintor: Callable | None = None, ubicacion: str = "") -> list[dict]:
+            proyecto: str, partes: list | None = None, pintor: Callable | None = None, ubicacion: str = "",
+            revisor: Callable | None = None, contexto: str = "") -> list[dict]:
     """Imágenes de presentación, en el orden en que se mandan:
     - ambiente: vista aérea pintada libre por la IA sobre el 3D del motor (ilustrativa, sin medidas). Si no hay modelo
       o falla, va la vista 3D exacta del motor con sus letreros (vista "aerea"). Necesita relieve.
@@ -1215,7 +1216,9 @@ def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | 
       por el motor (motor/plano_tecnico.py, no usa IA).
     - altimetria: lámina de relieve (pendientes por color, curvas con cota, escurrimiento, perfil de la calle y relieve
       por lote), solo con relieve (motor/plano_altimetria.py, no usa IA).
-    Devuelve [{ruta, nombre, titulo, vista, ia, ...}]."""
+    Con `revisor` (motor/revisor.py) un modelo que piensa revisa todas las láminas; una vista pintada con un problema
+    grave se vuelve a pintar una vez con la corrección y se revisa de nuevo. Lo que encontró va en `revision`.
+    Devuelve [{ruta, nombre, titulo, vista, ia, revision?, repintada?, ...}]."""
     ficha = ficha or {}
     calcos = {}
     cams = {}
@@ -1240,6 +1243,7 @@ def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | 
             log.exception("calco %s", vista)
     if "ambiente" in calcos:
         calcos["ambiente"].vista = "ambiente"
+    instrucciones = {}
     with ThreadPoolExecutor(max_workers=5) as ex:
         # la planta se revisa contra el trazo (2 intentos); las vistas de venta son libres (1 intento)
         futuros = {}
@@ -1255,6 +1259,7 @@ def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | 
                     ins_ += _alt.guia_render(malla, t.puntos, dib_v.a_px, *dib_v.imagen.size)
                 except Exception:  # noqa: BLE001
                     log.exception("guía de relieve %s", v_)
+                instrucciones[v_] = ins_
                 futuros[v_] = ex.submit(pintar, dib_v, pintor, ins_, 1, False)
         if "ambiente" in calcos:
             ins = INSTRUCCION_AMBIENTE + guia_ambiente(calcos["ambiente"], lot) + guia_quebrada(calcos["ambiente"], t, ficha)
@@ -1266,6 +1271,7 @@ def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | 
                 ins += altimetria.guia_render(malla, t.puntos, dib_a.a_px, *dib_a.imagen.size, barr)
             except Exception:  # noqa: BLE001
                 log.exception("guía de relieve del ambiente")
+            instrucciones["ambiente"] = ins
             futuros["ambiente"] = ex.submit(pintar, calcos["ambiente"], pintor, ins, 1, False)
         pintadas = {v: f.result() for v, f in futuros.items()}
     out = []
@@ -1322,4 +1328,47 @@ def generar(carpeta: str, base: str, t: Terreno, lot: Resultado, malla: Malla | 
         ruta = os.path.join(carpeta, f"{base}-presentacion-{vista}.jpg")
         final.save(ruta, "JPEG", quality=90)
         out.append({"ruta": ruta, "nombre": os.path.basename(ruta), "titulo": titulo, "vista": vista, **info})
+    if revisor is not None and out:
+        try:
+            _revisar_y_repintar(out, calcos, instrucciones, pintor, revisor, lot, ficha, proyecto, partes, contexto,
+                                nombres_v)
+        except Exception:  # noqa: BLE001
+            log.exception("revisión de la presentación")
     return out
+
+
+def _revisar_y_repintar(out, calcos, instrucciones, pintor, revisor, lot, ficha, proyecto, partes, contexto, nombres_v):
+    """Revisa todas las láminas con el modelo que piensa; las vistas pintadas con un problema grave se pintan otra vez
+    con la corrección (una sola vez) y se revisan de nuevo. Los planos del motor no se repintan: lo que tengan se
+    reporta."""
+    from . import revisor as rev
+
+    contexto = contexto or rev.contexto_proyecto(lot, ficha)
+    probs = rev.revisar_laminas(revisor, [(p["vista"], p["titulo"], p["ruta"]) for p in out], contexto)
+    por_vista: dict[str, list] = {}
+    for q in probs:
+        por_vista.setdefault(q["id"], []).append(q)
+    rehacer = [p for p in out if p.get("ia") and p["vista"] in instrucciones and p["vista"] != "planta"
+               and any(q["gravedad"] == "alta" for q in por_vista.get(p["vista"], []))]
+    if rehacer and pintor is not None:
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            fut = {p["vista"]: ex.submit(pintar, calcos[p["vista"]], pintor,
+                                         instrucciones[p["vista"]] + rev.correccion(por_vista[p["vista"]]), 1, False)
+                   for p in rehacer}
+            for p in rehacer:
+                img, info = fut[p["vista"]].result()
+                if not info["ia"]:
+                    continue
+                v = p["vista"]
+                final = (rotular_ambiente(img, lot, ficha, proyecto, partes, vista=nombres_v[v][0]) if v in nombres_v
+                         else rotular_ambiente(img, lot, ficha, proyecto, partes))
+                final.save(p["ruta"], "JPEG", quality=90)
+                p["repintada"] = True
+        rep = [p for p in rehacer if p.get("repintada")]
+        if rep:  # la segunda vuelta reemplaza lo que se dijo de esas vistas
+            nuevos = rev.revisar_laminas(revisor, [(p["vista"], p["titulo"], p["ruta"]) for p in rep], contexto)
+            for p in rep:
+                por_vista[p["vista"]] = [q for q in nuevos if q["id"] == p["vista"]]
+    for p in out:
+        if por_vista.get(p["vista"]):
+            p["revision"] = por_vista[p["vista"]]

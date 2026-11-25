@@ -45,7 +45,8 @@ class GeminiLLM(LLM):
     puede_ver = True
 
     def __init__(self, api_key: str, modelo_chat: str, modelo_vision: str, timeout_s: float | None = None,
-                 modelo_imagen: str = "", tamano_imagen: str = "2K"):
+                 modelo_imagen: str = "", tamano_imagen: str = "2K", modelo_revisor: str = "",
+                 pensamiento_revisor: str = "high"):
         import os
 
         from google import genai
@@ -58,8 +59,12 @@ class GeminiLLM(LLM):
         self.modelo_vision = modelo_vision
         self.modelo_imagen = modelo_imagen
         self.tamano_imagen = tamano_imagen
+        self.modelo_revisor = modelo_revisor
+        self.pensamiento_revisor = pensamiento_revisor
         if not modelo_imagen:
             self.pintar = None  # sin modelo de imagen: la presentación sale con el calco
+        if not modelo_revisor:
+            self.revisar = None  # sin revisor: la entrega sale solo con la revisión geométrica del motor
 
     def _contenidos(self, mensajes):
         from google.genai import types
@@ -112,6 +117,22 @@ class GeminiLLM(LLM):
             contents=[types.Part.from_bytes(data=datos, mime_type=mime), instruccion],
             config=types.GenerateContentConfig(response_mime_type="application/json", response_json_schema=esquema,
                                                temperature=_temperatura(self.modelo_vision, 0.0)),
+        )
+        return json.loads(r.text)
+
+    def revisar(self, partes: list[tuple[str, bytes]], instruccion: str, esquema: dict) -> dict:
+        """Revisión de la entrega con un modelo que piensa: varias imágenes con su título y una lista de chequeo."""
+        from google.genai import types
+
+        contenido = []
+        for titulo, datos in partes:
+            contenido += [f"Lámina: {titulo}", types.Part.from_bytes(data=datos, mime_type="image/jpeg")]
+        contenido.append(instruccion)
+        r = self.client.models.generate_content(
+            model=self.modelo_revisor, contents=contenido,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json", response_json_schema=esquema,
+                thinking_config=types.ThinkingConfig(thinking_level=self.pensamiento_revisor)),
         )
         return json.loads(r.text)
 
@@ -198,5 +219,7 @@ class ReglasLLM(LLM):
 def crear(config) -> LLM:
     if config.GEMINI_API_KEY:
         return GeminiLLM(config.GEMINI_API_KEY, config.MODELO_CHAT, config.MODELO_VISION,
-                         modelo_imagen=getattr(config, "MODELO_IMAGEN", ""), tamano_imagen=getattr(config, "TAMANO_IMAGEN", "2K"))
+                         modelo_imagen=getattr(config, "MODELO_IMAGEN", ""), tamano_imagen=getattr(config, "TAMANO_IMAGEN", "2K"),
+                         modelo_revisor=getattr(config, "MODELO_REVISOR", ""),
+                         pensamiento_revisor=getattr(config, "PENSAMIENTO_REVISOR", "high"))
     return ReglasLLM()
