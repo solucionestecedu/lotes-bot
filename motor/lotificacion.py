@@ -208,6 +208,25 @@ def franja_de_proteccion(anillo, lado: str, ancho: float) -> Polygon | None:
     return _mayor(franja) if franja.geom_type != "Polygon" else franja
 
 
+def proteccion_de_quebrada(protecciones: list, anillo, ficha: dict | None) -> Polygon | None:
+    """De las zonas no lotificadas, la que es la franja de la quebrada: la que más lindero comparte con el lado de la
+    quebrada (las demás son caídas fuertes). Sin lado conocido, la más grande."""
+    if not protecciones:
+        return None
+    lados = [q.get("lado") for q in (ficha or {}).get("quebradas") or [] if q.get("lado")]
+    if lados:
+        from shapely.geometry import LineString
+
+        poly = Polygon(anillo).buffer(0)
+        bordes = [LineString(e) for lado in lados for e in _bordes_hacia(poly, lado)]
+        if bordes:
+            borde = unary_union(bordes).buffer(0.5)
+            mejor = max(protecciones, key=lambda g: g.intersection(borde).area)
+            if mejor.intersection(borde).area > 0:
+                return mejor
+    return max(protecciones, key=lambda g: g.area)
+
+
 def lotificar(anillo, P: Parametros | None = None, malla: Malla | None = None, excluir: list | None = None) -> Resultado:
     P = P or Parametros()
     W, F, D = P.calle, P.frente, P.fondo

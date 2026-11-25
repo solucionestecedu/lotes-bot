@@ -26,7 +26,7 @@ from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import linemerge, nearest_points, polylabel, unary_union
 
 from . import modelo3d
-from .lotificacion import LADOS, Resultado, _bordes_hacia, _poligonos
+from .lotificacion import LADOS, Resultado, _bordes_hacia, _poligonos, proteccion_de_quebrada
 from .relieve import Malla, curvas, estadisticas, intervalo_curvas
 from .terreno import Terreno
 
@@ -84,6 +84,14 @@ def _fuente(tam: int, negrita: bool = False) -> ImageFont.FreeTypeFont:
 
 def _aspecto(r: float) -> str:
     return min(ASPECTOS, key=lambda k: abs(math.log(ASPECTOS[k] / r)))
+
+
+def _anillo_de(lot: Resultado) -> list:
+    """Contorno del terreno armado con las piezas del prediseño (cuando no se tiene el terreno a mano)."""
+    todo = unary_union([l["poly"] for l in lot.lotes] + list(lot.calles) + list(lot.protecciones)
+                       + [v["poly"] for v in lot.verdes] + list(lot.remanentes)).buffer(0.05).buffer(-0.05)
+    pz = max(_poligonos(todo), key=lambda g: g.area)
+    return list(pz.exterior.coords)
 
 
 def _anillos(g):
@@ -874,7 +882,7 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
             _texto(d, (x, y), f"ÁREA VERDE\nRECREATIVA\n{_fmt(st['area_verde'])} m²", max(11, min(26, m * 2.2)), True,
                    color=(28, 80, 28), ocupado=ocupado)
     if lot.protecciones:
-        prot = max(lot.protecciones, key=lambda g: g.area)
+        prot = proteccion_de_quebrada(lot.protecciones, _anillo_de(lot), ficha)
         try:
             p = polylabel(prot, tolerance=0.5)
         except Exception:  # noqa: BLE001
@@ -1023,7 +1031,7 @@ def rotular_aerea(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, pr
                             fill=(255, 255, 255, 225), outline=(90, 70, 50), width=2)
         d.text((x, y), txt, font=f, fill=(30, 30, 30), anchor="mm")
     if lot.protecciones:
-        prot = max(lot.protecciones, key=lambda g: g.area)
+        prot = proteccion_de_quebrada(lot.protecciones, _anillo_de(lot), ficha)
         p = prot.representative_point()
         x, y = dib.a_px(p.x, p.y, alt(p.x, p.y) + 4)
         if 0 <= x < W and 0 <= y < H:

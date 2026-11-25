@@ -478,14 +478,24 @@ def generar_tecnico(t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict
                 p = v["poly"].representative_point()
             texto(a_px(p.x, p.y), f"ÁREA VERDE\nRECREATIVA\n{_m2(st['area_verde'])} m²", 11.5, True, VERDE_TXT)
     if lot.protecciones:
-        prot = max(lot.protecciones, key=lambda g: g.area)
+        from .lotificacion import proteccion_de_quebrada
+
+        prot = proteccion_de_quebrada(lot.protecciones, t.puntos, ficha)
+        for otra in lot.protecciones:  # las demás son caídas fuertes que no se lotifican
+            if otra is not prot and otra.area > 40:
+                try:
+                    q_ = polylabel(otra, tolerance=0.5)
+                except Exception:  # noqa: BLE001
+                    q_ = otra.representative_point()
+                texto(a_px(q_.x, q_.y), "CAÍDA FUERTE\nno se lotifica", 11, True, VERDE_TXT)
         try:
             p = polylabel(prot, tolerance=0.5)
         except Exception:  # noqa: BLE001
             p = prot.representative_point()
         franja = next((f" · FRANJA {1.5 * float(q['profundidad_m']):.2f} m" for q in ficha.get("quebradas") or []
                        if q.get("profundidad_m")), "")
-        texto(a_px(p.x, p.y), f"ZONA DE PROTECCIÓN DE QUEBRADA{franja}", 11.5, True, VERDE_TXT)
+        if ficha.get("quebradas") or len(lot.protecciones) == 1:
+            texto(a_px(p.x, p.y), f"ZONA DE PROTECCIÓN DE QUEBRADA{franja}", 11.5, True, VERDE_TXT)
     if quebrada is not None:
         q = quebrada.interpolate(0.5, normalized=True)
         if geo.contains(q):
@@ -607,7 +617,9 @@ def generar_tecnico(t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict
     total = st["area_total"]
     filas = [(f"Lotes ({n})", st["area_util"]), ("Calle y redondel" if st.get("modo") == "calle_central" else "Calles",
                                                   st["area_circulacion"]),
-             ("Área verde recreativa", st["area_verde"]), ("Zona de protección de quebrada", st.get("area_proteccion", 0)),
+             ("Área verde recreativa", st["area_verde"]),
+             ("Protección de quebrada y caídas fuertes" if len(lot.protecciones) > 1 else "Zona de protección de quebrada",
+              st.get("area_proteccion", 0)),
              ("Equipamiento social", st.get("area_equipamiento", 0))]
     filas = [(a, b) for a, b in filas if b and b > 0.5]
     resto = total - sum(b for _, b in filas)

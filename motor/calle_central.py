@@ -275,8 +275,26 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
         redondel = Point(x_r, y_eje(x_r) + corrimiento).buffer(r_ret, quad_segs=12)
         return _mayor(unary_union([tira, redondel]).intersection(Zr))
 
+    cache_r: dict = {}
+
+    def x_redondel(x_r):
+        """Corre el redondel hacia la entrada hasta que quepa completo (sin morder la franja de protección, una caída
+        fuerte ni el lindero): un retorno recortado no sirve para dar la vuelta."""
+        clave = round(x_r, 1)
+        if clave not in cache_r:
+            x = x_r
+            while x > x_ini + r_ret:
+                circulo = Point(x, y_eje(x) + corrimiento).buffer(r_ret, quad_segs=12)
+                if circulo.difference(Zr).area < 0.5:
+                    break
+                x -= 0.5
+            cache_r[clave] = max(x, x_ini + r_ret)
+        return cache_r[clave]
+
     def armar(x_corte):
-        x_r = max(x_ini + r_ret, min(x_corte + r_ret, x_fin - r_ret))
+        ideal = max(x_ini + r_ret, min(x_corte + r_ret, x_fin - r_ret))
+        x_r = x_redondel(ideal)
+        x_corte = x_corte - (ideal - x_r)  # si el redondel se recorre, los lotes terminan antes de él
         calle = calle_hasta(x_r)
         libre = Zr.difference(calle.buffer(0.01))
         zona_lotes = libre.intersection(box(Tr.bounds[0] - 5, Tr.bounds[1] - 5, x_corte, Tr.bounds[3] + 5))
