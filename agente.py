@@ -163,6 +163,9 @@ HERRAMIENTAS = [
          "agua": {"type": "string", "enum": ["anda", "pozo", "no_hay", "no_se"]},
          "luz": {"type": "string", "enum": ["si", "no", "no_se"]},
          "notas": {"type": "string"},
+         "usar_sugerido": {"type": "boolean", "description": "true cuando el usuario confirma lo que el bot encontró solo "
+                           "(lugar y zona, acceso y quebradas del plano, tipo y lote propuestos): se guarda todo de una vez; "
+                           "lo que el usuario corrija va en los demás campos y manda"},
      })},
     {"nombre": "obtener_relieve", "descripcion": "Descarga alturas satelitales del terreno ubicado y calcula desnivel, "
      "pendientes y curvas de nivel (aproximadas).", "parametros": _obj({})},
@@ -270,7 +273,12 @@ FLUJO:
    Y 289049.93. Si no las tienes, mándame tu ubicación de WhatsApp parado en un mojón y dime en cuál." Usa los nombres
    de mojón del plano. → ubicar_terreno con referencia = ese mojón (si dan varios, los demás en 'puntos'). Un pin sin
    mojón va con referencia 'centro' y es aproximado: dilo. Luego obtener_relieve.
-4. FICHA DEL PROYECTO → guardar_ficha. Antes de diseñar pregunta lo que falte, máximo 3 preguntas por mensaje, en este
+4. FICHA DEL PROYECTO → guardar_ficha. Primero lo que el bot ya averiguó: obtener_relieve trae "encontrado" (distrito,
+   municipio y si está en el AMSS; acceso y quebradas que dice el plano, con su profundidad aproximada; tipo y lote
+   propuestos) y "preguntar_solo". Manda UN mensaje corto: lo encontrado como propuesta ("Esto es lo que encontré: …
+   ¿algo está mal?") y, en la misma tanda, solo lo de "preguntar_solo". Si confirma → guardar_ficha con usar_sugerido=true
+   y lo que haya contestado; si corrige algo, ese dato va en su campo y manda. No vuelvas a preguntar lo que ya se
+   averiguó. Si no hubo relieve (no se pudo ubicar), pregunta lo que falte, máximo 3 preguntas por mensaje, en este
    orden de importancia:
    a) Zona: ¿está en el AMSS (San Salvador y municipios vecinos), en la zona urbana de otro municipio, o fuera de
       centros poblados? Cambia el área verde que pide la ley.
@@ -372,9 +380,11 @@ class Agente:
             partes.append(f"El plano trae {len(s.candidatos)} terrenos: falta que el usuario elija uno o unirlos.")
         if s.ficha:
             partes.append("Ficha del proyecto: " + json.dumps(s.ficha, ensure_ascii=False))
-            falta = self._faltantes(s)
+            falta = self._faltantes(s, sugerido=bool(s.ficha.get("sugerido")))
             if falta:
                 partes.append("Falta preguntar: " + ", ".join(falta) + ".")
+            if s.ficha.get("sugerido") and not s.ficha["sugerido"].get("confirmado"):
+                partes.append("Hay datos averiguados por el bot en ficha.sugerido: confírmalos de una vez, no los preguntes.")
         else:
             partes.append("Ficha del proyecto: vacía (zona, tipo y lote, acceso, quebradas, servicios).")
         if s.cumplimiento:
@@ -657,11 +667,16 @@ class Agente:
         return r
 
     # ------------------------------------------------------------------ ficha del proyecto
-    def _faltantes(self, s: Sesion) -> list[str]:
-        f = s.ficha
+    def _faltantes(self, s: Sesion, sugerido: bool = False) -> list[str]:
+        """Lo que falta preguntar. Con `sugerido`, lo que el bot ya averiguó no cuenta (se confirma de una vez)."""
+        f = dict(s.ficha)
+        if sugerido and f.get("sugerido"):
+            for k, v in f["sugerido"].get("ficha", {}).items():
+                f.setdefault(k, v)
         falta = []
         if not f.get("zona"):
-            falta.append("zona (AMSS, urbana o fuera de centros poblados)")
+            falta.append("zona: ¿está en el casco urbano (o un centro poblado) o fuera?" if sugerido
+                         else "zona (AMSS, urbana o fuera de centros poblados)")
         if not f.get("lote_objetivo_m2") and not f.get("tipo") and not f.get("lotes_por_lado"):
             falta.append("tipo de proyecto y tamaño de lote")
         if not f.get("acceso_lado"):
@@ -680,9 +695,14 @@ class Agente:
             falta.append("agua y luz")
         return falta
 
-    def h_guardar_ficha(self, s: Sesion, salidas=None, **datos) -> dict:
+    def h_guardar_ficha(self, s: Sesion, salidas=None, usar_sugerido=False, **datos) -> dict:
         campos = {"zona", "tipo", "lote_objetivo_m2", "frente_m", "acceso_lado", "cerrado", "quebradas", "sin_quebradas",
                   "figura", "agua", "luz", "notas", "distribucion", "lotes_por_lado", "calle_sobre"}
+        if usar_sugerido and s.ficha.get("sugerido"):
+            for k, v in s.ficha["sugerido"].get("ficha", {}).items():
+                if datos.get(k) is None and (k not in s.ficha or k == "sin_quebradas"):
+                    datos[k] = v
+            s.ficha["sugerido"]["confirmado"] = True
         for k, v in datos.items():
             if k in campos and v is not None:
                 if k in ("acceso_lado",) and str(v).lower() not in LADOS:
@@ -696,7 +716,7 @@ class Agente:
                 s.ficha[k] = v
         if s.ficha.get("quebradas"):
             s.ficha["sin_quebradas"] = False
-        return {"ok": True, "ficha": {k: v for k, v in s.ficha.items() if k != "del_plano"},
+        return {"ok": True, "ficha": {k: v for k, v in s.ficha.items() if k not in ("del_plano", "sugerido")},
                 "falta_preguntar": self._faltantes(s)}
 
     def _parametros(self, s: Sesion) -> tuple[Parametros, list, dict]:
@@ -913,7 +933,59 @@ class Agente:
         s.malla = m.a_dict()
         s.lotes_param = s.lotes_stats = None
         st = relieve.estadisticas(m, t.puntos)
-        return {"ok": True, "estadisticas": st, "intervalo_curvas_m": relieve.intervalo_curvas(st["desnivel"])}
+        out = {"ok": True, "estadisticas": st, "intervalo_curvas_m": relieve.intervalo_curvas(st["desnivel"])}
+        try:
+            enc = self._averiguar(s, t, m, st)
+        except Exception:  # noqa: BLE001 - lo que no se averigua se pregunta
+            log.exception("averiguar contexto")
+            enc = None
+        if enc:
+            out["encontrado"] = enc["encontrado"]
+            out["preguntar_solo"] = self._faltantes(s, sugerido=True)
+            out["nota"] = ("Manda UN solo mensaje: lo que encontraste (dilo como propuesta y pide que lo corrija si algo "
+                           "está mal) y, en la misma tanda, solo lo que hay en 'preguntar_solo'. Si confirma, guardar_ficha "
+                           "con usar_sugerido=true más lo que conteste.")
+        return out
+
+    def _averiguar(self, s: Sesion, t, m, st: dict) -> dict | None:
+        """Lo que se puede saber sin preguntar: dónde cae (y si está en el AMSS), el acceso y las quebradas que dice el
+        plano (con su profundidad aproximada por el relieve) y el tipo de proyecto que le queda. Queda en la ficha como
+        'sugerido' hasta que el usuario lo confirme."""
+        from motor import territorio
+
+        enc, ficha = {}, {}
+        lugar = territorio.donde(*t.centroide())
+        if lugar:
+            enc["lugar"] = lugar
+            if lugar["amss"]:
+                ficha["zona"] = "amss"
+                enc["zona"] = ("dentro del Área Metropolitana de San Salvador: el permiso va por la OPAMSS y aplican sus "
+                               "normas (área verde 10 % del área útil)")
+        plano = s.ficha.get("del_plano") or []
+        calles = [c["lado"] for c in plano if c.get("tipo") == "calle" and c.get("lado") in LADOS]
+        if calles:
+            ficha["acceso_lado"] = calles[0]
+            enc["acceso"] = f"la calle pública llega por el {calles[0]} (lo dice el plano)"
+        qs = []
+        for c in plano:
+            if c.get("tipo") in ("quebrada", "rio") and c.get("lado") in LADOS:
+                q = {"tipo": c["tipo"], "lado": c["lado"]}
+                p = territorio.profundidad_al_lado(m, t.puntos, c["lado"]) if c["tipo"] == "quebrada" else None
+                if p and p["tipica_m"] >= 1.0:
+                    q["profundidad_m"] = max(p["tipica_m"], 1.0)
+                    q["profundidad_aprox"] = f"unos {p['tipica_m']:g} m (hasta {p['maxima_m']:g} m), medida con el relieve satelital"
+                qs.append(q)
+        if qs:
+            ficha["quebradas"] = [{k: v for k, v in q.items() if k != "profundidad_aprox"} for q in qs]
+            enc["quebradas"] = qs
+        elif plano:
+            ficha["sin_quebradas"] = True
+            enc["quebradas"] = "el plano no menciona quebradas ni ríos en las colindancias"
+        prop = territorio.propuesta_proyecto(t.area, st.get("pendiente_media"), bool(lugar and lugar["amss"]))
+        ficha.update(tipo=prop["tipo"], lote_objetivo_m2=prop["lote_objetivo_m2"])
+        enc["propuesta"] = prop
+        s.ficha["sugerido"] = {"encontrado": enc, "ficha": ficha}
+        return s.ficha["sugerido"]
 
     def h_predisenar(self, s: Sesion, salidas=None, **params) -> dict:
         t = s.get_terreno()
