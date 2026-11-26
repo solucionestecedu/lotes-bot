@@ -194,6 +194,10 @@ class ReglasLLM(LLM):
             if xy:
                 args.update(x_inicio=float(xy.group(1).replace(",", "")), y_inicio=float(xy.group(2).replace(",", "")))
             return Respuesta(llamadas=[{"nombre": "cargar_rumbos", "args": args}])
+        mo = re.search(r"((?:mo(?:j[oó]n)?|v[eé]rtice)\.?\s*\d+)\D*?x\s*[:=]?\s*([\d,]+\.?\d*)\D*?y\s*[:=]?\s*([\d,]+\.?\d*)", low)
+        if mo:  # la coordenada de un mojón escrita a mano
+            return Respuesta(llamadas=[{"nombre": "ubicar_terreno", "args": {
+                "x": float(mo.group(2).replace(",", "")), "y": float(mo.group(3).replace(",", "")), "referencia": mo.group(1)}}])
         if "relieve" in low or "curvas" in low:
             return Respuesta(llamadas=[{"nombre": "obtener_relieve", "args": {}}])
         if "lote" in low or "prediseñ" in low or "predisen" in low:
@@ -214,10 +218,13 @@ class ReglasLLM(LLM):
             if r.get("problemas"):
                 txt += "\n⚠️ " + "\n⚠️ ".join(r["problemas"])
             if not s["ubicado"]:
-                txt += "\nFalta ubicarlo: compárteme la ubicación del terreno o la coordenada del vértice 1."
+                txt += ("\nCon el cuadro ya tengo la forma exacta, pero no dónde está. Escríbeme la X y la Y (Lambert) de "
+                        "cualquier mojón, por ejemplo: Mo. 1 X 473280.68 Y 289049.93. Si no las tienes, comparte tu "
+                        "ubicación parado en un mojón.")
             return txt
         if nombre == "ubicar_terreno":
-            return "Terreno ubicado. Escribe *relieve* para sacar las curvas de nivel."
+            return (r.get("nota", "Terreno ubicado.") + (("\n⚠️ " + r["aviso"]) if r.get("aviso") else "")
+                    + "\nEscribe *relieve* para sacar las curvas de nivel.")
         if nombre == "obtener_relieve":
             e = r["estadisticas"]
             return f"Relieve listo: desnivel {e['desnivel']} m, pendiente media {e['pendiente_media']} %. Escribe *lotes* para prediseñar."

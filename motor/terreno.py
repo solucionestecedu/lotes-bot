@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import asdict, dataclass, field
 
 from . import proyeccion
@@ -113,12 +114,36 @@ class Terreno:
     def mover(self, dx: float, dy: float) -> None:
         self.puntos = [(x + dx, y + dy) for x, y in self.puntos]
 
+    def indice_vertice(self, ref) -> int | None:
+        """El vértice que el usuario nombra: "Mo. 5", "mo5", "Mojón 5", "5" o el nombre tal cual. None si no existe."""
+        def norm(v):
+            return re.sub(r"[^0-9A-Z]", "", str(v).upper().replace("Ó", "O"))
+
+        r = norm(ref)
+        if not r:
+            return None
+        if r in ("VERTICE1", "PRIMERO"):
+            return 0
+        nombres = [norm(n) for n in self.nombres]
+        if r in nombres:
+            return nombres.index(r)
+        num = re.fullmatch(r"(?:MOJON|MO|M|V|VERTICE|P|PUNTO|E|EST|ESTACION)?(\d+)", r)
+        if num:
+            for i, n in enumerate(nombres):
+                m = re.fullmatch(r"[A-Z]*(\d+)", n)
+                if m and int(m.group(1)) == int(num.group(1)):
+                    return i
+        return None
+
     def ubicar_en(self, x: float, y: float, referencia: str = "vertice1") -> None:
+        """Pone el terreno en el mapa: el punto (x, y) es su centro (`referencia="centro"`) o el vértice que se nombra."""
         if referencia == "centro":
             cx, cy = self.centroide()
             self.mover(x - cx, y - cy)
         else:
-            self.mover(x - self.puntos[0][0], y - self.puntos[0][1])
+            i = self.indice_vertice(referencia)
+            i = 0 if i is None else i
+            self.mover(x - self.puntos[i][0], y - self.puntos[i][1])
         self.ubicado = True
 
     def a_dict(self) -> dict:

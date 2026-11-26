@@ -113,13 +113,19 @@ HERRAMIENTAS = [
      "verificar el cierre. Úsala cuando el usuario confirme el dato correcto del plano.",
      "parametros": _obj({"numero": {"type": "integer"}, "rumbo": {"type": "string", "description": "por ejemplo N 21°59'09\" O"},
                          "distancia": {"type": "number"}}, ["numero"])},
-    {"nombre": "ubicar_terreno", "descripcion": "Ubica el terreno en el mapa cuando el plano no trae coordenadas: con un punto "
-     "lat/lng (pin de WhatsApp) o con coordenadas Lambert X/Y.",
+    {"nombre": "ubicar_terreno", "descripcion": "Ubica el terreno en el mapa cuando el plano no trae coordenadas (solo rumbos "
+     "y distancias): con la coordenada X/Y Lambert de un mojón que el usuario escribe a mano, o con un pin de WhatsApp "
+     "(lat/lng) tomado parado en un mojón. Basta un mojón; si da más, van en 'puntos' y se comprueban.",
      "parametros": _obj({
          "lat": {"type": "number"}, "lng": {"type": "number"},
-         "x": {"type": "number"}, "y": {"type": "number"},
-         "referencia": {"type": "string", "enum": ["vertice1", "centro"],
-                        "description": "si el punto es el primer vértice o el centro aproximado del terreno"},
+         "x": {"type": "number", "description": "X (Este) Lambert del mojón"},
+         "y": {"type": "number", "description": "Y (Norte) Lambert del mojón"},
+         "referencia": {"type": "string", "description": "el mojón donde va el punto, como lo dice el usuario ('Mo. 1', "
+                        "'5'); 'centro' solo si es un pin sin mojón (aproximado)"},
+         "sistema": {"type": "string", "enum": ["SIRGAS", "NAD27"], "description": "de las X/Y; por defecto SIRGAS"},
+         "puntos": {"type": "array", "description": "otros mojones con su X/Y para comprobar la ubicación",
+                    "items": {"type": "object", "properties": {"mojon": {"type": "string"}, "x": {"type": "number"},
+                                                                "y": {"type": "number"}}}},
      })},
     {"nombre": "elegir_terreno", "descripcion": "Cuando el plano trae varios terrenos: elige con cuál trabajar ('1', '2', ...) "
      "o 'unir' para juntarlos en un solo proyecto (deben ser colindantes; se alinean por su lindero común).",
@@ -257,7 +263,13 @@ FLUJO:
    trabajas con uno o si los unes en un solo proyecto → elegir_terreno.
 2. VERIFICAR. Si la poligonal no cierra o el área no coincide, NO avances: explica en simple, muestra el tramo sospechoso
    y pide confirmarlo viendo el plano → corregir_tramo.
-3. UBICAR si hace falta (pin de WhatsApp o coordenada del vértice 1) → ubicar_terreno. Luego obtener_relieve.
+3. UBICAR. Si el plano trae coordenadas Lambert, ya queda ubicado: no pidas nada. Si el estado dice SIN UBICAR (el
+   plano solo trae rumbos y distancias, o sus coordenadas son locales), pide en un mensaje corto un punto escrito a mano:
+   "Con el cuadro ya tengo la forma exacta del terreno, pero no dónde está, y sin eso no sale el relieve. Mándame la X y
+   la Y (Lambert) de cualquier mojón, como vienen en el plano o te las da el topógrafo, por ejemplo: Mo. 1  X 473280.68
+   Y 289049.93. Si no las tienes, mándame tu ubicación de WhatsApp parado en un mojón y dime en cuál." Usa los nombres
+   de mojón del plano. → ubicar_terreno con referencia = ese mojón (si dan varios, los demás en 'puntos'). Un pin sin
+   mojón va con referencia 'centro' y es aproximado: dilo. Luego obtener_relieve.
 4. FICHA DEL PROYECTO → guardar_ficha. Antes de diseñar pregunta lo que falte, máximo 3 preguntas por mensaje, en este
    orden de importancia:
    a) Zona: ¿está en el AMSS (San Salvador y municipios vecinos), en la zona urbana de otro municipio, o fuera de
@@ -511,6 +523,11 @@ class Agente:
             extra["errores_lectura"] = errores
         if fuera:
             extra["coordenadas_fuera_de_el_salvador"] = fuera
+        if not t.ubicado:
+            extra["falta_ubicar"] = (("las coordenadas del plano no son Lambert de El Salvador (parecen locales)" if fuera
+                                      else "el plano solo trae rumbos y distancias")
+                                     + ": pide la X/Y de un mojón escrita a mano, o un pin parado en un mojón")
+            extra["mojones"] = t.nombres[:30]
         if d.get("colindancias"):
             extra["colindancias"] = [{k: c.get(k) for k in ("lado", "tipo", "descripcion") if c.get(k)} for c in d["colindancias"]]
         return t, extra, conocidas
@@ -818,24 +835,72 @@ class Agente:
             t2 = verificar_con_coordenadas(t2, {k: tuple(v) for k, v in s.conocidas.items()})
         return self._informe_terreno(s, t2, {"cambio": f"tramo {numero}: {viejo['rumbo']} {viejo['dist']} → {nuevo['rumbo']} {nuevo['dist']}"})
 
-    def h_ubicar_terreno(self, s: Sesion, lat=None, lng=None, x=None, y=None, referencia="centro", salidas=None) -> dict:
-        if lat is not None and lng is not None:
+    def h_ubicar_terreno(self, s: Sesion, lat=None, lng=None, x=None, y=None, referencia=None, sistema="SIRGAS",
+                         puntos=None, salidas=None) -> dict:
+        pin = lat is not None and lng is not None
+        if pin:
             x, y = proyeccion.a_lambert(float(lat), float(lng))
         if x is None or y is None:
-            return {"ok": False, "error": "falta la ubicación (lat/lng o X/Y)"}
+            return {"ok": False, "error": "falta la ubicación: la X y la Y de un mojón, o un pin parado en un mojón"}
         x, y = float(x), float(y)
+        if not pin:
+            if not proyeccion.en_el_salvador(x, y) and proyeccion.en_el_salvador(y, x):
+                x, y = y, x  # escribieron primero la Y
+            if sistema == "NAD27":
+                x, y = proyeccion.nad27_a_sirgas(x, y)
         if not proyeccion.en_el_salvador(x, y):
-            return {"ok": False, "error": "ese punto no cae en El Salvador"}
+            return {"ok": False, "error": "ese punto no cae en El Salvador" + (
+                "" if pin else ": no parecen coordenadas Lambert. Muchos topógrafos usan coordenadas locales (que "
+                "arrancan en 1000, 1000 o parecido) para dibujar; esas no dicen dónde está el terreno. Pide la X y la Y "
+                "Lambert de un mojón (en El Salvador la X va de 380,000 a 640,000 y la Y de 225,000 a 370,000) o un pin "
+                "de WhatsApp parado en un mojón.")}
         t = s.get_terreno()
         if t is None:
             s.pin = list(proyeccion.a_latlng(x, y))
             return {"ok": True, "nota": "Guardé la ubicación; falta cargar el plano."}
-        t.ubicar_en(x, y, referencia or "centro")
-        s.set_terreno(t)
+        ref = (referencia or ("centro" if pin else "")).strip()
+        if ref.lower() == "centro":
+            ref = "centro"
+        elif t.indice_vertice(ref) is None:
+            return {"ok": False, "error": f"no encuentro el mojón '{referencia}' en el plano",
+                    "mojones": t.nombres[:30], "nota": "Pregunta a qué mojón del cuadro corresponde ese punto."}
+        t.ubicar_en(x, y, ref)
+        out = {"ok": True}
+
+        def mojon(i):
+            n = str(t.nombres[i])
+            return f"Mo. {n}" if n.isdigit() else n
+
+        comprobados, lejos = [], []
+        for p in puntos or []:
+            i = t.indice_vertice(p.get("mojon"))
+            if i is None or p.get("x") is None or p.get("y") is None:
+                continue
+            px, py = float(p["x"]), float(p["y"])
+            if not proyeccion.en_el_salvador(px, py) and proyeccion.en_el_salvador(py, px):
+                px, py = py, px
+            if sistema == "NAD27":
+                px, py = proyeccion.nad27_a_sirgas(px, py)
+            d = math.hypot(t.puntos[i][0] - px, t.puntos[i][1] - py)
+            comprobados.append({"mojon": mojon(i), "diferencia_m": round(d, 2)})
+            if d > 2.0:
+                lejos.append(mojon(i))
+        s.set_terreno(t)  # borra el relieve y el prediseño de la ubicación anterior
         lat_c, lng_c = proyeccion.a_latlng(*t.centroide())
-        return {"ok": True, "centro_latlng": [round(lat_c, 6), round(lng_c, 6)],
-                "nota": "Ubicación aproximada: con un pin de celular el error es de varios metros. Las coordenadas "
-                        "oficiales salen del levantamiento."}
+        out["centro_latlng"] = [round(lat_c, 6), round(lng_c, 6)]
+        if ref == "centro":
+            out["nota"] = ("Ubicación aproximada: el pin se tomó como el centro del terreno. Para que el relieve salga bien, "
+                           "lo mejor es la X/Y de un mojón o un pin parado en un mojón.")
+        elif pin:
+            out["nota"] = f"Ubicado con un pin parado en el {mojon(t.indice_vertice(ref))}: unos metros de error."
+        else:
+            out["nota"] = f"Ubicado con la coordenada del {mojon(t.indice_vertice(ref))}."
+        if comprobados:
+            out["comprobacion"] = comprobados
+        if lejos:
+            out["aviso"] = (f"Los mojones {', '.join(lejos)} no cuadran (más de 2 m): revisa que las coordenadas estén bien "
+                            "escritas y que cada una sea del mojón que se dice.")
+        return out
 
     # ------------------------------------------------------------------ herramientas: relieve y lotes
     def h_obtener_relieve(self, s: Sesion, salidas=None) -> dict:
