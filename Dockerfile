@@ -7,7 +7,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Calles, ríos y construcciones de El Salvador (OpenStreetMap, © colaboradores, ODbL): se bajan del sitio oficial de
 # descargas (Geofabrik) en cada publicación y quedan dentro del bot. Si falla, el bot sale igual, sin datos del mapa.
 FROM base AS mapa
-RUN pip install --no-cache-dir osmium
+RUN apt-get update && apt-get install -y --no-install-recommends libexpat1 zlib1g && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir osmium
 COPY motor/ motor/
 COPY servicios/ servicios/
 COPY herramientas/construir_osm.py herramientas/

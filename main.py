@@ -41,7 +41,11 @@ def _nuevo(msg_id: str) -> bool:
 
 @app.get("/health")
 def health():
-    return {"ok": True, "modo": type(agente.llm).__name__}
+    from servicios import osm
+
+    p = osm._paquete()
+    return {"ok": True, "modo": type(agente.llm).__name__,
+            "mapa_osm": (p["meta"].get("fecha"), p["meta"].get("vias")) if p else None}
 
 
 # ---------------------------------------------------------------------------- WhatsApp
