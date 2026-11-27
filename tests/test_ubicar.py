@@ -71,13 +71,14 @@ def test_mas_de_un_mojon_se_comprueba_y_reubicar_borra_el_relieve_viejo(tmp_path
     assert s.malla is None
 
 
-def test_pin_sin_mojon_es_aproximado_y_con_mojon_no(tmp_path):
+def test_coordenadas_siempre_de_un_mojon(tmp_path):
+    """Sin mojón no se ubica (ya no hay "centro" aproximado); latitud y longitud escritas de un mojón sí sirven."""
     from motor import proyeccion
 
     ag, s, _ = _solo_rumbos(tmp_path)
     lat, lng = proyeccion.a_latlng(*_referencia().puntos[0])
     r = ag.h_ubicar_terreno(s, lat=lat, lng=lng)
-    assert "aproximada" in r["nota"]
+    assert not r["ok"] and "mojón" in r["error"] and not s.get_terreno().ubicado
     r = ag.h_ubicar_terreno(s, lat=lat, lng=lng, referencia="Mo. 1")
-    assert "parado en el Mo. 1" in r["nota"]
+    assert r["ok"] and "Mo. 1" in r["nota"]
     assert abs(s.get_terreno().puntos[0][0] - _referencia().puntos[0][0]) < 0.5

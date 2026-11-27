@@ -190,10 +190,6 @@ class ReglasLLM(LLM):
             return Respuesta(texto=self._resumen(ultimo["nombre"], ultimo["resultado"]))
         t = ultimo["texto"]
         low = t.lower()
-        m = re.search(r"\[ubicación compartida: ([-\d.]+), ([-\d.]+)\]", t)
-        if m:
-            return Respuesta(llamadas=[{"nombre": "ubicar_terreno", "args": {"lat": float(m.group(1)), "lng": float(m.group(2)),
-                                                                              "referencia": "centro"}}])
         if "[adjunto:" in low:
             return Respuesta(texto="Recibí el archivo, pero en modo sin IA no puedo leer fotos ni PDF. Pégame los rumbos "
                                    "y distancias como texto, uno por línea (ejemplo: S 82°40'17\" E 82.87).")
@@ -213,9 +209,9 @@ class ReglasLLM(LLM):
             return Respuesta(llamadas=[{"nombre": "predisenar", "args": {}}])
         if "lámina" in low or "lamina" in low or "pdf" in low or "entregable" in low:
             return Respuesta(llamadas=[{"nombre": "generar_entregables", "args": {}}])
-        return Respuesta(texto="Hola. Mándame los rumbos y distancias del plano (uno por línea) y, si los tienes, la "
-                               "coordenada del primer vértice. Luego te pido la ubicación, saco el relieve, prediseño "
-                               "los lotes y te armo la lámina en PDF.")
+        return Respuesta(texto="Hola. Mándame los rumbos y distancias del plano (uno por línea). Si el plano no trae "
+                               "coordenadas, te pido la X y la Y de un mojón; luego saco el relieve, prediseño los lotes "
+                               "y te armo la lámina en PDF.")
 
     @staticmethod
     def _resumen(nombre, r):

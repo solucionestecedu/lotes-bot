@@ -18,7 +18,8 @@ from dataclasses import dataclass, field
 from shapely.geometry import Polygon
 
 import config
-from motor import altimetria, colindancia, exportar, lamina, modelo3d, normas, presentacion, proyeccion, relieve
+from motor import (altimetria, colindancia, exportar, lamina, modelo3d, normas, presentacion, proyeccion, relieve,
+                   territorio)
 from motor.calle_central import es_angosto, lindero_comun, lotificar_calle_central, lotificar_un_lado
 from motor.lotificacion import (LADOS, ErrorLotificacion, Parametros, franja_de_proteccion, lotificar,
                                 punto_de_acceso)
@@ -31,6 +32,11 @@ MAX_PASOS = 8
 MAX_HISTORIAL = 24
 
 # ---------------------------------------------------------------------------- sesión
+AVISO_PIN = ("Para ubicar el terreno necesito coordenadas, no la ubicación del teléfono (no es exacta). Mándame la X y "
+             "la Y (Lambert) de cualquier mojón, como vienen en el plano o te las da el topógrafo, por ejemplo: "
+             "Mo. 1  X 473280.68  Y 289049.93")
+
+
 def formato_whatsapp(t: str) -> str:
     """El modelo a veces escribe Markdown: WhatsApp usa *negritas* con un asterisco, viñetas como texto y no tiene
     separadores ni títulos con #."""
@@ -55,7 +61,6 @@ class Sesion:
     lotes_param: dict | None = None
     lotes_stats: dict | None = None
     proyecto: dict = field(default_factory=dict)               # nombre, ubicacion, propietario
-    pin: list | None = None                                    # [lat, lng] compartido por el usuario
     adjuntos: dict = field(default_factory=dict)               # id -> {"mime","nombre","datos"} (solo en memoria)
     candidatos: list = field(default_factory=list)             # varios terrenos leídos de un plano (dicts de Terreno)
     ficha: dict = field(default_factory=dict)                  # ficha del proyecto: zona, tipo, lote, acceso, quebradas...
@@ -130,14 +135,16 @@ HERRAMIENTAS = [
      "parametros": _obj({"numero": {"type": "integer"}, "rumbo": {"type": "string", "description": "por ejemplo N 21°59'09\" O"},
                          "distancia": {"type": "number"}}, ["numero"])},
     {"nombre": "ubicar_terreno", "descripcion": "Ubica el terreno en el mapa cuando el plano no trae coordenadas (solo rumbos "
-     "y distancias): con la coordenada X/Y Lambert de un mojón que el usuario escribe a mano, o con un pin de WhatsApp "
-     "(lat/lng) tomado parado en un mojón. Basta un mojón; si da más, van en 'puntos' y se comprueban.",
+     "y distancias): con las coordenadas de un mojón que el usuario escribe (X/Y Lambert del plano o del topógrafo; o "
+     "latitud y longitud si así las tiene). Nunca con la ubicación del teléfono (pin). Basta un mojón; si da más, van en "
+     "'puntos' y se comprueban.",
      "parametros": _obj({
-         "lat": {"type": "number"}, "lng": {"type": "number"},
          "x": {"type": "number", "description": "X (Este) Lambert del mojón"},
          "y": {"type": "number", "description": "Y (Norte) Lambert del mojón"},
-         "referencia": {"type": "string", "description": "el mojón donde va el punto, como lo dice el usuario ('Mo. 1', "
-                        "'5'); 'centro' solo si es un pin sin mojón (aproximado)"},
+         "lat": {"type": "number", "description": "solo si el usuario escribe latitud y longitud de un mojón"},
+         "lng": {"type": "number", "description": "solo si el usuario escribe latitud y longitud de un mojón"},
+         "referencia": {"type": "string", "description": "el mojón de esas coordenadas, como lo dice el usuario ('Mo. 1', "
+                        "'5')"},
          "sistema": {"type": "string", "enum": ["SIRGAS", "NAD27"], "description": "de las X/Y; por defecto SIRGAS"},
          "puntos": {"type": "array", "description": "otros mojones con su X/Y para comprobar la ubicación",
                     "items": {"type": "object", "properties": {"mojon": {"type": "string"}, "x": {"type": "number"},
@@ -163,6 +170,8 @@ HERRAMIENTAS = [
              "profundidad_m": {"type": "number", "description": "profundidad aproximada (para quebradas y taludes)"}},
              ["tipo", "lado"])},
          "sin_quebradas": {"type": "boolean", "description": "true si el usuario confirma que no colinda con quebradas ni ríos"},
+         "quebrada_confirmada": {"type": "boolean", "description": "true si, después del aviso del relieve "
+                                 "(revisar_quebrada), el usuario confirma que sí colinda con esa quebrada"},
          "figura": {"type": "string", "enum": ["lotificacion", "condominio", "proindiviso", "no_se"],
                     "description": "cómo se va a vender: lotes con permiso de lotificación, condominio, o en proindiviso"},
          "distribucion": {"type": "string", "enum": ["automatica", "calle_central", "un_lado"],
@@ -300,9 +309,9 @@ FLUJO:
    plano solo trae rumbos y distancias, o sus coordenadas son locales), pide en un mensaje corto un punto escrito a mano:
    "Con el cuadro ya tengo la forma exacta del terreno, pero no dónde está, y sin eso no sale el relieve. Mándame la X y
    la Y (Lambert) de cualquier mojón, como vienen en el plano o te las da el topógrafo, por ejemplo: Mo. 1  X 473280.68
-   Y 289049.93. Si no las tienes, mándame tu ubicación de WhatsApp parado en un mojón y dime en cuál." Usa los nombres
-   de mojón del plano. → ubicar_terreno con referencia = ese mojón (si dan varios, los demás en 'puntos'). Un pin sin
-   mojón va con referencia 'centro' y es aproximado: dilo. Luego obtener_relieve.
+   Y 289049.93." Usa los nombres de mojón del plano. → ubicar_terreno con referencia = ese mojón (si dan varios, los
+   demás en 'puntos'). NO pidas ni uses la ubicación del teléfono (pin): no es exacta. Si no tienen las coordenadas,
+   que se las pidan al topógrafo. Luego obtener_relieve.
 4. FICHA DEL PROYECTO → guardar_ficha. Primero lo que el bot ya averiguó: obtener_relieve trae "encontrado" (distrito,
    municipio y si está en el AMSS; acceso y quebradas que dice el plano, con su profundidad aproximada; tipo y lote
    propuestos) y "preguntar_solo". Manda UN mensaje corto: lo encontrado como propuesta ("Esto es lo que encontré: …
@@ -326,6 +335,8 @@ FLUJO:
    lotes_por_lado=[mín, máx]; tipo campestre. Con dos terrenos unidos la calle va sobre el lindero común y cada lado es
    un terreno; por defecto la calle va completa dentro del terreno más grande, pegada al lindero (calle_sobre). No
    calcules el tamaño de lote tú: el motor reparte y te dice cuánto queda.
+   Si guardar_ficha trae "revisar_quebrada", NO prediseñes todavía: dile al usuario en una línea lo que muestra el
+   relieve y pregúntale si de verdad colinda con esa quebrada.
    Si el plano ya dice las colindancias (calle, quebrada), úsalas y solo confírmalas. Si el usuario dice "usa lo
    estándar", sigue con lo que tengas y di qué supusiste.
 5. PREDISEÑO → predisenar. Resume: número de lotes, tamaño promedio, área verde, y el cuadro de cumplimiento en corto
@@ -428,8 +439,6 @@ class Agente:
             partes.append("Cumplimiento: " + json.dumps(normas.resumen(s.cumplimiento), ensure_ascii=False))
         if s.proyecto:
             partes.append("Datos del proyecto: " + json.dumps(s.proyecto, ensure_ascii=False))
-        if s.pin:
-            partes.append(f"Ubicación compartida por el usuario: {s.pin}.")
         if s.adjuntos:
             partes.append("Adjuntos disponibles: " + ", ".join(f"{k} ({v['nombre']})" for k, v in s.adjuntos.items()))
         return SISTEMA + "\nESTADO ACTUAL: " + " ".join(partes)
@@ -447,9 +456,14 @@ class Agente:
             aid = f"a{len(s.adjuntos) + 1}"
             s.adjuntos[aid] = a
             entrada += f"\n[adjunto: {aid}, {a.get('nombre') or a['mime']}]"
-        if ubicacion:
-            s.pin = [round(ubicacion[0], 6), round(ubicacion[1], 6)]
-            entrada += f"\n[ubicación compartida: {s.pin[0]}, {s.pin[1]}]"
+        if ubicacion:  # el pin del teléfono no sirve para ubicar el terreno: se piden coordenadas
+            if not entrada:
+                s.historial += [{"rol": "usuario", "texto": "(compartió su ubicación de WhatsApp)"},
+                                {"rol": "modelo", "texto": AVISO_PIN}]
+                s.historial = s.historial[-MAX_HISTORIAL:]
+                return [{"tipo": "texto", "texto": AVISO_PIN}]
+            entrada += ("\n[compartió su ubicación de WhatsApp: no sirve para ubicar el terreno; si falta ubicarlo, pide la "
+                        "X y la Y de un mojón]")
         entrada = entrada.strip() or "(mensaje vacío)"
         mensajes = list(s.historial[-MAX_HISTORIAL:]) + [{"rol": "usuario", "texto": entrada}]
         salidas: list[dict] = []
@@ -573,7 +587,7 @@ class Agente:
         if not t.ubicado:
             extra["falta_ubicar"] = (("las coordenadas del plano no son Lambert de El Salvador (parecen locales)" if fuera
                                       else "el plano solo trae rumbos y distancias")
-                                     + ": pide la X/Y de un mojón escrita a mano, o un pin parado en un mojón")
+                                     + ": pide la X y la Y (Lambert) de un mojón escritas a mano")
             extra["mojones"] = t.nombres[:30]
         if d.get("colindancias"):
             extra["colindancias"] = [{k: c.get(k) for k in ("lado", "tipo", "descripcion") if c.get(k)} for c in d["colindancias"]]
@@ -734,7 +748,8 @@ class Agente:
 
     def h_guardar_ficha(self, s: Sesion, salidas=None, usar_sugerido=False, **datos) -> dict:
         campos = {"zona", "tipo", "lote_objetivo_m2", "frente_m", "acceso_lado", "cerrado", "quebradas", "sin_quebradas",
-                  "figura", "agua", "luz", "notas", "distribucion", "lotes_por_lado", "calle_sobre", "calle_pegada_a"}
+                  "figura", "agua", "luz", "notas", "distribucion", "lotes_por_lado", "calle_sobre", "calle_pegada_a",
+                  "quebrada_confirmada"}
         if usar_sugerido and s.ficha.get("sugerido"):
             for k, v in s.ficha["sugerido"].get("ficha", {}).items():
                 if datos.get(k) is None and (k not in s.ficha or k == "sin_quebradas"):
@@ -753,8 +768,41 @@ class Agente:
                 s.ficha[k] = v
         if s.ficha.get("quebradas"):
             s.ficha["sin_quebradas"] = False
-        return {"ok": True, "ficha": {k: v for k, v in s.ficha.items() if k not in ("del_plano", "sugerido")},
-                "falta_preguntar": self._faltantes(s)}
+        out = {"ok": True, "ficha": {k: v for k, v in s.ficha.items() if k not in ("del_plano", "sugerido")},
+               "falta_preguntar": self._faltantes(s)}
+        revisar = self._revisar_quebradas(s)
+        if revisar:
+            out["revisar_quebrada"] = revisar
+        return out
+
+    def _revisar_quebradas(self, s: Sesion) -> list[str]:
+        """Las quebradas que dijo el usuario contra el relieve: si de ese lado no se ve un cauce, hay que preguntar
+        antes de quitarle terreno con la franja de protección. Las que dice el plano no se cuestionan."""
+        m, t = s.get_malla(), s.get_terreno()
+        if m is None or t is None or s.ficha.get("quebrada_confirmada"):
+            return []
+        del_plano = {str(c.get("lado", "")).lower() for c in s.ficha.get("del_plano") or []
+                     if c.get("tipo") in ("quebrada", "rio")}
+        out = []
+        for q in s.ficha.get("quebradas") or []:
+            lado = str(q.get("lado") or "").lower()
+            if q.get("tipo") not in ("quebrada", "rio") or lado not in LADOS or lado in del_plano:
+                continue
+            try:
+                c = territorio.cauce_al_lado(m, t.puntos, lado)
+            except Exception:  # noqa: BLE001
+                log.exception("cauce al lado")
+                continue
+            if not c or c["veredicto"] == "cauce":
+                continue
+            que = {"ladera": f"del lado {lado} el terreno solo sigue bajando (ladera), sin el fondo de una quebrada",
+                   "sube": f"del lado {lado} el terreno sube: ahí no se ve una quebrada",
+                   "plano": f"del lado {lado} el terreno está casi parejo: no se ve una quebrada"}[c["veredicto"]]
+            out.append(f"El relieve satelital no muestra un cauce junto al lindero {lado} (en los primeros "
+                       f"{c['alcance_m']:.0f} m {que}). Antes de prediseñar, pregúntale al usuario si de verdad colinda "
+                       f"con una {q['tipo']} de ese lado: la franja de protección le quita terreno. Si confirma, guarda "
+                       f"quebrada_confirmada=true; si no, quítala (sin_quebradas=true).")
+        return out
 
     def _parametros(self, s: Sesion) -> tuple[Parametros, list, dict]:
         """Parámetros del prediseño: la ficha pone los valores base y lo que pidió el usuario en predisenar manda."""
@@ -935,31 +983,31 @@ class Agente:
 
     def h_ubicar_terreno(self, s: Sesion, lat=None, lng=None, x=None, y=None, referencia=None, sistema="SIRGAS",
                          puntos=None, salidas=None) -> dict:
-        pin = lat is not None and lng is not None
-        if pin:
+        geo = (x is None or y is None) and lat is not None and lng is not None  # latitud/longitud escritas de un mojón
+        if geo:
             x, y = proyeccion.a_lambert(float(lat), float(lng))
         if x is None or y is None:
-            return {"ok": False, "error": "falta la ubicación: la X y la Y de un mojón, o un pin parado en un mojón"}
+            return {"ok": False, "error": "faltan las coordenadas: la X y la Y (Lambert) de un mojón"}
         x, y = float(x), float(y)
-        if not pin:
+        if not geo:
             if not proyeccion.en_el_salvador(x, y) and proyeccion.en_el_salvador(y, x):
                 x, y = y, x  # escribieron primero la Y
             if sistema == "NAD27":
                 x, y = proyeccion.nad27_a_sirgas(x, y)
         if not proyeccion.en_el_salvador(x, y):
             return {"ok": False, "error": "ese punto no cae en El Salvador" + (
-                "" if pin else ": no parecen coordenadas Lambert. Muchos topógrafos usan coordenadas locales (que "
+                "" if geo else ": no parecen coordenadas Lambert. Muchos topógrafos usan coordenadas locales (que "
                 "arrancan en 1000, 1000 o parecido) para dibujar; esas no dicen dónde está el terreno. Pide la X y la Y "
-                "Lambert de un mojón (en El Salvador la X va de 380,000 a 640,000 y la Y de 225,000 a 370,000) o un pin "
-                "de WhatsApp parado en un mojón.")}
+                "Lambert de un mojón (en El Salvador la X va de 380,000 a 640,000 y la Y de 225,000 a 370,000).")}
         t = s.get_terreno()
         if t is None:
-            s.pin = list(proyeccion.a_latlng(x, y))
-            return {"ok": True, "nota": "Guardé la ubicación; falta cargar el plano."}
-        ref = (referencia or ("centro" if pin else "")).strip()
-        if ref.lower() == "centro":
-            ref = "centro"
-        elif t.indice_vertice(ref) is None:
+            return {"ok": False, "error": "primero hace falta el plano (el cuadro de rumbos); después las coordenadas "
+                                          "de un mojón"}
+        ref = (referencia or "").strip()
+        if not ref:
+            return {"ok": False, "error": "falta decir de qué mojón son esas coordenadas", "mojones": t.nombres[:30],
+                    "nota": "Pregunta a qué mojón del cuadro corresponden."}
+        if t.indice_vertice(ref) is None:
             return {"ok": False, "error": f"no encuentro el mojón '{referencia}' en el plano",
                     "mojones": t.nombres[:30], "nota": "Pregunta a qué mojón del cuadro corresponde ese punto."}
         t.ubicar_en(x, y, ref)
@@ -986,13 +1034,7 @@ class Agente:
         s.set_terreno(t)  # borra el relieve y el prediseño de la ubicación anterior
         lat_c, lng_c = proyeccion.a_latlng(*t.centroide())
         out["centro_latlng"] = [round(lat_c, 6), round(lng_c, 6)]
-        if ref == "centro":
-            out["nota"] = ("Ubicación aproximada: el pin se tomó como el centro del terreno. Para que el relieve salga bien, "
-                           "lo mejor es la X/Y de un mojón o un pin parado en un mojón.")
-        elif pin:
-            out["nota"] = f"Ubicado con un pin parado en el {mojon(t.indice_vertice(ref))}: unos metros de error."
-        else:
-            out["nota"] = f"Ubicado con la coordenada del {mojon(t.indice_vertice(ref))}."
+        out["nota"] = f"Ubicado con la coordenada del {mojon(t.indice_vertice(ref))}."
         if comprobados:
             out["comprobacion"] = comprobados
         if lejos:
@@ -1029,8 +1071,6 @@ class Agente:
         """Lo que se puede saber sin preguntar: dónde cae (y si está en el AMSS), el acceso y las quebradas que dice el
         plano (con su profundidad aproximada por el relieve) y el tipo de proyecto que le queda. Queda en la ficha como
         'sugerido' hasta que el usuario lo confirme."""
-        from motor import territorio
-
         enc, ficha = {}, {}
         lugar = territorio.donde(*t.centroide())
         if lugar:

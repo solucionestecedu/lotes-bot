@@ -85,7 +85,7 @@ def procesar_whatsapp(m: dict):
         elif m["tipo"] == "location":
             ubicacion = (m["lat"], m["lng"])
         elif m["tipo"] != "text":
-            wa.enviar_texto(destino, "Por ahora entiendo texto, fotos o PDF del plano y la ubicación compartida.")
+            wa.enviar_texto(destino, "Por ahora entiendo texto y fotos o PDF del plano.")
             return
         sesion = sesiones.obtener("wa:" + destino)
         if m.get("texto", "").strip().lower() in ("/reiniciar", "reiniciar"):

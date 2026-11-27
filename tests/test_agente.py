@@ -151,16 +151,14 @@ def test_modo_sin_ia_pide_texto_si_mandan_foto(tmp_path):
     assert "no puedo leer fotos" in out[0]["texto"]
 
 
-def test_ubicacion_por_pin(tmp_path):
+def test_el_pin_no_ubica_el_terreno(tmp_path):
+    """La ubicación del teléfono no es exacta: el bot no la usa y pide las coordenadas de un mojón."""
     ag = Agente(ReglasLLM(), str(tmp_path))
     s = Sesion("w")
     ag.atender(s, _texto("plano_a.txt"))
     out = ag.atender(s, "", ubicacion=(13.70, -89.20))
-    t = s.get_terreno()
-    assert t.ubicado and "aproximada" in out[0]["texto"].lower()  # pin sin mojón: se toma como el centro
-    from motor.proyeccion import a_latlng
-    lat, lng = a_latlng(*t.centroide())
-    assert abs(lat - 13.70) < 1e-5 and abs(lng + 89.20) < 1e-5
+    assert not s.get_terreno().ubicado
+    assert "X y la Y" in out[0]["texto"] and "mojón" in out[0]["texto"]
 
 
 def test_herramienta_que_falla_no_tumba_el_bot(tmp_path):

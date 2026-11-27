@@ -74,6 +74,60 @@ def profundidad_al_lado(malla, anillo, lado: str, alcance: float = 30.0) -> dict
     return {"tipica_m": round(max(0.0, tip) * 2) / 2, "maxima_m": round(max(0.0, max(prof)) * 2) / 2}
 
 
+def cauce_al_lado(malla, anillo, lado: str, alcance: float = 50.0, paso: float = 10.0) -> dict | None:
+    """¿El relieve muestra una quebrada junto al lindero de ese lado? Se recorren perfiles hacia afuera cada `paso` m de
+    lindero. Un cauce es un fondo con subida del otro lado (forma de V). Si el terreno solo sigue bajando es ladera (la
+    quebrada podría estar más lejos o ser muy angosta para el satélite); si sube, ahí no hay quebrada.
+    Devuelve {veredicto: 'cauce' | 'ladera' | 'sube' | 'plano', ...} o None si no hay datos. Con relieve satelital
+    (~10–30 m) una quebrada chica puede no verse: es una alerta para preguntar, no una prueba."""
+    from .lotificacion import LADOS, orilla_hacia
+
+    if lado not in LADOS or malla is None:
+        return None
+    orilla = orilla_hacia(Polygon(anillo).buffer(0), lado)
+    if orilla is None or orilla.is_empty:
+        return None
+    a = math.radians(LADOS[lado])
+    vx, vy = math.sin(a), math.cos(a)
+    votos = {"cauce": 0, "ladera": 0, "sube": 0, "plano": 0}
+    fondos, distancias = [], []
+    for ln in getattr(orilla, "geoms", [orilla]):
+        n = max(1, int(ln.length / paso))
+        for k in range(n + 1):
+            q = ln.interpolate(k / n, normalized=True)
+            z0 = malla.altura(q.x, q.y)
+            perfil = [(d, malla.altura(q.x + vx * d, q.y + vy * d)) for d in np.arange(5, alcance + 0.1, 5)]
+            perfil = [(d, z) for d, z in perfil if math.isfinite(z)]
+            if not math.isfinite(z0) or len(perfil) < 3:
+                continue
+            d_min, z_min = min(perfil, key=lambda p: p[1])
+            z_max = max(z for _, z in perfil)
+            despues = [z for d, z in perfil if d > d_min]
+            if z0 - z_min >= 1.5 and despues and max(despues) - z_min >= 1.5:
+                votos["cauce"] += 1
+                fondos.append(z0 - z_min)
+                distancias.append(d_min)
+            elif z0 - z_min >= 1.5:
+                votos["ladera"] += 1
+            elif z_max - z0 >= 1.5:
+                votos["sube"] += 1
+            else:
+                votos["plano"] += 1
+    total = sum(votos.values())
+    if total < 3:
+        return None
+    if votos["cauce"] >= 0.3 * total:  # basta que se vea en parte del lindero
+        veredicto = "cauce"
+    else:
+        veredicto = max(("ladera", "sube", "plano"), key=lambda k: votos[k])
+    out = {"veredicto": veredicto, "perfiles": total, "con_cauce_pct": round(100 * votos["cauce"] / total),
+           "alcance_m": alcance}
+    if fondos:
+        out["hondo_m"] = round(float(np.median(fondos)) * 2) / 2
+        out["a_m"] = round(float(np.median(distancias)))
+    return out
+
+
 def propuesta_proyecto(area_m2: float, pend_media: float | None, amss: bool | None) -> dict:
     """Tipo de proyecto y tamaño de lote que le queda al terreno, como punto de partida (el dueño decide)."""
     p = pend_media or 0.0

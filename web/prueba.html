@@ -33,12 +33,11 @@
 <body>
 <header><div><b>Lotes-Bot</b><br><small>chat de prueba (igual que en WhatsApp)</small></div>
   <button id="reiniciar" type="button">Empezar de cero</button></header>
-<div id="chat"><div class="m bot">Hola 👋 Mándame la foto o el PDF del cuadro de rumbos del plano (📎), o pega los rumbos como texto. Con 📍 me compartes la ubicación del terreno.</div></div>
+<div id="chat"><div class="m bot">Hola 👋 Mándame la foto o el PDF del cuadro de rumbos del plano (📎), o pega los rumbos como texto. Si el plano no trae coordenadas, te voy a pedir la X y la Y de un mojón.</div></div>
 <div id="adj"></div>
 <form id="f">
   <input type="file" id="archivo" accept="image/*,application/pdf" hidden>
   <button class="icono" type="button" id="clip" title="Adjuntar plano">📎</button>
-  <button class="icono" type="button" id="pin" title="Compartir ubicación">📍</button>
   <textarea id="texto" rows="1" placeholder="Escribe un mensaje"></textarea>
   <button class="icono enviar" type="submit" title="Enviar">➤</button>
 </form>
@@ -47,7 +46,6 @@ const qs = new URLSearchParams(location.search), token = qs.get('t') || '';
 let sesion = sessionStorage.getItem('sesion');
 if (!sesion) { sesion = Math.random().toString(36).slice(2); sessionStorage.setItem('sesion', sesion); }
 const chat = document.getElementById('chat'), texto = document.getElementById('texto'), archivo = document.getElementById('archivo'), adj = document.getElementById('adj');
-let ubic = null;
 function burbuja(cls, contenido) { const d = document.createElement('div'); d.className = 'm ' + cls; d.textContent = contenido; chat.appendChild(d); chat.scrollTop = chat.scrollHeight; return d; }
 function formato(t) { return t; }
 function doc(s) {
@@ -65,28 +63,21 @@ function imagen(s) {
 function mostrarAdj() {
   const partes = [];
   if (archivo.files[0]) partes.push('📎 ' + archivo.files[0].name);
-  if (ubic) partes.push('📍 ' + ubic.lat.toFixed(5) + ', ' + ubic.lng.toFixed(5));
   adj.textContent = partes.join('   '); adj.style.display = partes.length ? 'block' : 'none';
 }
 document.getElementById('clip').onclick = () => archivo.click();
 archivo.onchange = mostrarAdj;
-document.getElementById('pin').onclick = () => {
-  const manual = () => { const v = prompt('Escribe latitud, longitud (ej. 13.5103, -89.4584):'); if (!v) return; const [a, b] = v.split(',').map(Number); if (isFinite(a) && isFinite(b)) { ubic = { lat: a, lng: b }; mostrarAdj(); } };
-  if (!navigator.geolocation) return manual();
-  navigator.geolocation.getCurrentPosition(p => { ubic = { lat: p.coords.latitude, lng: p.coords.longitude }; mostrarAdj(); }, manual, { timeout: 8000 });
-};
 document.getElementById('reiniciar').onclick = () => enviar('/reiniciar');
 texto.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); document.getElementById('f').requestSubmit(); } });
 document.getElementById('f').onsubmit = e => { e.preventDefault(); enviar(texto.value); };
 async function enviar(t) {
-  if (!t.trim() && !archivo.files[0] && !ubic) return;
+  if (!t.trim() && !archivo.files[0]) return;
   const fd = new FormData();
   fd.append('token', token); fd.append('sesion', sesion); fd.append('texto', t);
   let eco = t;
   if (archivo.files[0]) { fd.append('archivo', archivo.files[0]); eco = '📎 ' + archivo.files[0].name + (t ? '\n' + t : ''); }
-  if (ubic) { fd.append('lat', ubic.lat); fd.append('lng', ubic.lng); eco = '📍 Ubicación compartida' + (eco ? '\n' + eco : ''); }
   burbuja('yo', eco);
-  texto.value = ''; archivo.value = ''; ubic = null; mostrarAdj();
+  texto.value = ''; archivo.value = ''; mostrarAdj();
   const p = document.createElement('div'); p.className = 'pensando'; p.textContent = 'escribiendo…'; chat.appendChild(p);
   try {
     const r = await fetch('chat', { method: 'POST', body: fd });

@@ -88,8 +88,51 @@ def test_agente_entrada_al_oriente_sin_quebrada(tmp_path, monkeypatch):
     # el diseñador ofrece la calle del otro lado
     from motor import disenador
 
-    vs = disenador.variantes({}, s.ficha, False, "un_lado", None, medidas={"frente": 15, "fondo": 40, "area_minima": 540},
-                             angosto=True, bordes=["norte", "sur"], borde_actual="norte")
+    hoy = {"frente": 15, "fondo": 40, "area_minima": 540}
+    vs = disenador.variantes({}, s.ficha, False, "un_lado", None, medidas=hoy, angosto=True, bordes=["norte", "sur"],
+                             borde_actual="norte")
     assert any(v["param"].get("calle_pegada_a") == "sur" for v in vs)
     vs = disenador.variantes({}, s.ficha, False, "automatica", None, angosto=True)
     assert any(v["param"].get("distribucion") == "un_lado" for v in vs)
+
+
+# ------------------------------------------------------------------ la quebrada que dice el usuario contra el relieve
+def _malla(z_de):
+    import numpy as np
+
+    xs, ys = np.arange(-60, 261, 5.0), np.arange(-70, 111, 5.0)
+    X, Y = np.meshgrid(xs, ys)
+    return relieve.Malla(xs[0], ys[0], 5.0, len(xs), len(ys), z_de(X, Y), "prueba")
+
+
+ANILLO = [(0, 0), (200, 0), (200, 40), (0, 40)]
+
+
+def test_cauce_ladera_o_sube():
+    import numpy as np
+
+    from motor import territorio
+
+    valle = _malla(lambda X, Y: np.where(Y < 0, -6 * np.exp(-((Y + 20) / 8) ** 2), 0.37 * Y))
+    c = territorio.cauce_al_lado(valle, ANILLO, "sur")
+    assert c["veredicto"] == "cauce" and c["hondo_m"] == pytest.approx(6, abs=1) and c["a_m"] == 20
+    assert territorio.cauce_al_lado(_malla(lambda X, Y: 0.37 * Y), ANILLO, "sur")["veredicto"] == "ladera"
+    assert territorio.cauce_al_lado(_malla(lambda X, Y: -0.2 * Y), ANILLO, "sur")["veredicto"] == "sube"
+
+
+def test_el_bot_pregunta_si_el_relieve_no_muestra_la_quebrada(tmp_path):
+    from servicios.llm import ReglasLLM
+    from motor.terreno import Terreno
+
+    ag = Agente(ReglasLLM(), str(tmp_path))
+    s = Sesion("q")
+    t = Terreno(nombres=["1", "2", "3", "4"], puntos=ANILLO, tramos=[], cierre=0.0, perimetro=480.0, ubicado=True)
+    s.set_terreno(t)
+    s.malla = _malla(lambda X, Y: 0.37 * Y).a_dict()  # ladera: baja hacia el sur sin fondo
+    r = ag.h_guardar_ficha(s, quebradas=[{"tipo": "quebrada", "lado": "sur", "profundidad_m": 6}])
+    assert r["ok"] and "revisar_quebrada" in r and "sur" in r["revisar_quebrada"][0]
+    r = ag.h_guardar_ficha(s, quebrada_confirmada=True)  # el usuario confirma: ya no se vuelve a preguntar
+    assert "revisar_quebrada" not in r
+    s.ficha = {"quebradas": [{"tipo": "quebrada", "lado": "sur", "profundidad_m": 6}],
+               "del_plano": [{"lado": "sur", "tipo": "quebrada"}]}
+    assert ag._revisar_quebradas(s) == []  # lo que dice el plano no se cuestiona
