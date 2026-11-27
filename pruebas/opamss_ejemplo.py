@@ -28,3 +28,13 @@ for nombre, t in terrenos.items():
         d = opamss._consulta(requests.Session(), opamss.USO_SUELO, poli, "esriGeometryPolygon", "*")
         for f in d.get("features", [])[:3]:
             print("CRUDO", {k: v for k, v in f["attributes"].items() if not str(k).startswith("st_")})
+        d = opamss._consulta(requests.Session(), opamss.USO_SUELO, poli, "esriGeometryPolygon", "*", geometria_salida=True)
+        print("SR", d.get("spatialReference"), "geomType", d.get("geometryType"))
+        for f in d.get("features", [])[:3]:
+            g = f.get("geometry") or {}
+            rings = g.get("rings") or g.get("curveRings") or []
+            print("GEOM", list(g.keys()), "anillos", len(rings), "pts", [len(r) for r in rings][:5],
+                  "p0", rings[0][:2] if rings else None)
+            pg = opamss._poligono(g)
+            print("POLI", None if pg is None else (round(pg.area), [round(v) for v in pg.bounds], pg.is_valid),
+                  "inter", None if pg is None else round(pg.intersection(Polygon(t.puntos)).area))
