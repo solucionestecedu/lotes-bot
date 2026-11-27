@@ -101,8 +101,26 @@ def _num(v):
         return None
 
 
+def _codigo_clase(texto) -> str | None:
+    """Código de la clasificación a partir de su nombre (por si el servidor no manda cod_clas)."""
+    import unicodedata
+
+    t = unicodedata.normalize("NFKD", str(texto or "")).encode("ascii", "ignore").decode().lower()
+    if not t:
+        return None
+    if "no urbanizable" in t:
+        return "NUR"
+    if "urbanizable" in t:
+        return "URA"
+    if "urbano" in t:
+        return "URB"
+    if "rural" in t:
+        return "RUR"
+    return None
+
+
 def _uso_suelo(http, poli_wgs, terreno: Polygon) -> list[dict]:
-    d = _consulta(http, USO_SUELO, poli_wgs, "esriGeometryPolygon", CAMPOS_USO, geometria_salida=True)
+    d = _consulta(http, USO_SUELO, poli_wgs, "esriGeometryPolygon", "*", geometria_salida=True)
     zonas: dict[tuple, float] = {}
     attrs: dict[tuple, dict] = {}
     for f in d.get("features") or []:
@@ -118,7 +136,7 @@ def _uso_suelo(http, poli_wgs, terreno: Polygon) -> list[dict]:
         if area < 0.005 * total and len(zonas) > 1:
             continue
         a = attrs[clave]
-        out.append({"codigo": (a.get("cod_clas") or "").strip().upper() or None,
+        out.append({"codigo": (a.get("cod_clas") or "").strip().upper() or _codigo_clase(a.get("des_clas")),
                     "clasificacion": a.get("des_clas"), "tratamiento": a.get("des_tra"), "aptitud": a.get("des_apt"),
                     "altura_base": a.get("alt_bas"), "altura_ampliada": a.get("alt_amp"),
                     "impermeabilizacion_base": a.get("imp_base"), "impermeabilizacion_ampliada": a.get("imp_amp"),

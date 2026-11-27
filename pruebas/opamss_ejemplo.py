@@ -21,3 +21,10 @@ for nombre, t in terrenos.items():
     op = opamss.consultar(t.puntos)
     print(f"\n=== {nombre} · {t.area:,.0f} m2 · {time.time() - t0:.1f} s")
     print(json.dumps(op, ensure_ascii=False, indent=1) if op else "SIN RESPUESTA")
+    if os.environ.get("CRUDO"):  # atributos tal como llegan de la capa de uso de suelo
+        import requests
+        from shapely.geometry import Polygon
+        poli = {"rings": [opamss._a_wgs(list(Polygon(t.puntos).exterior.coords)[:-1])], "spatialReference": {"wkid": 4326}}
+        d = opamss._consulta(requests.Session(), opamss.USO_SUELO, poli, "esriGeometryPolygon", "*")
+        for f in d.get("features", [])[:3]:
+            print("CRUDO", {k: v for k, v in f["attributes"].items() if not str(k).startswith("st_")})
