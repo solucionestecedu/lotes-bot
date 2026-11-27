@@ -29,6 +29,7 @@ ALCANCE_CONSTR = 500.0   # m para contar construcciones
 COLINDA_CALLE = 15.0     # m: una calle a esta distancia o menos se toma como pegada al terreno
 COLINDA_AGUA = 30.0      # m: un río o quebrada a esta distancia o menos colinda
 CELDA = 100.0            # m, cuadros donde se cuentan las construcciones
+METIDO = 5.0             # m: lo que entra menos que esto al terreno se toma como que va por el lindero
 
 LADOS_8 = ["norte", "noreste", "oriente", "sureste", "sur", "suroeste", "poniente", "noroeste"]
 CALLES = {
@@ -179,7 +180,8 @@ def clasificar(cercanas, terreno: Polygon) -> dict:
         p_t = cerca.centroid if not cerca.is_empty else nearest_points(terreno, g)[0]
         lado = _lado(math.degrees(math.atan2(p_t.x - c.x, p_t.y - c.y)))
         item = {"tipo": tipo, "nombre": nombre, "distancia_m": round(d, 1), "lado": lado, "colinda": d <= lim}
-        if d < 0.01:
+        # el mapa tiene unos metros de error: solo "cruza" lo que entra más de METIDO m (si no, va por el lindero)
+        if d < 0.01 and g.intersects(terreno.buffer(-METIDO)):
             dentro = g.intersection(terreno)
             if isinstance(g, Polygon):
                 if dentro.area > 1:

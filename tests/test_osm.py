@@ -56,6 +56,17 @@ def test_lo_que_cruza_el_terreno_y_el_lago():
     assert r["construcciones_500m"] == 0
 
 
+def test_lo_que_va_por_el_lindero_no_cruza():
+    """Una calle o quebrada dibujada 2 m adentro del lindero (error normal del mapa) colinda, no cruza."""
+    vias = [("highway=secondary", "Carretera", [(X0 + 98, Y0 - 50), (X0 + 98, Y0 + 110)]),
+            ("waterway=stream", None, [(X0 - 20, Y0 + 2), (X0 + 120, Y0 + 2)])]
+    r = osm.consultar(ANILLO, datos=osm.empacar(vias))
+    c, q = r["calles"][0], r["aguas"][0]
+    assert c["lado"] == "oriente" and c["colinda"] and "cruza_m" not in c
+    assert q["lado"] == "sur" and q["colinda"] and "cruza_m" not in q
+    assert osm.resumen(r)["calles"][0] == "carretera secundaria «Carretera»: pegada al lado oriente"
+
+
 def test_guardar_y_cargar_y_sin_paquete(tmp_path):
     ruta = str(tmp_path / "osm.npz")
     osm.guardar(PAQUETE, ruta)
