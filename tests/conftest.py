@@ -12,13 +12,13 @@ import pytest  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _sin_geovisor_opamss(monkeypatch, request):
-    """Las pruebas no salen a internet: el geovisor de la OPAMSS no responde salvo en sus propias pruebas."""
+    """Las pruebas no salen a internet ni usan el paquete del mapa: la OPAMSS y OpenStreetMap solo en sus propias pruebas."""
     from servicios import opamss, osm
 
     if not request.node.get_closest_marker("geovisor"):
         monkeypatch.setattr(opamss, "consultar", lambda anillo, http=None: None)
     if not request.node.get_closest_marker("mapa"):
-        monkeypatch.setattr(osm, "consultar", lambda anillo, http=None: None)
+        monkeypatch.setattr(osm, "consultar", lambda anillo, datos=None: None)
 
 
 def pytest_configure(config):

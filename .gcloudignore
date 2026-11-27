@@ -8,3 +8,4 @@ tests/
 pruebas/
 pruebas_privadas/
 *.pdf
+datos/osm_sv.npz*

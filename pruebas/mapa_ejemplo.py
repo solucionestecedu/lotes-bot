@@ -1,4 +1,5 @@
-"""Lo que dice OpenStreetMap alrededor de los terrenos de prueba (servidor real): python pruebas/mapa_ejemplo.py"""
+"""Lo que dice OpenStreetMap alrededor de los terrenos de prueba, con el paquete real armado con
+herramientas/construir_osm.py: OSM_DATOS=/tmp/osm_sv.npz python pruebas/mapa_ejemplo.py"""
 import json
 import os
 import sys
@@ -19,5 +20,7 @@ terrenos = {
 for nombre, t in terrenos.items():
     t0 = time.time()
     r = osm.consultar(t.puntos)
-    print(f"\n=== {nombre} · {time.time() - t0:.1f} s")
-    print(json.dumps(osm.resumen(r), ensure_ascii=False, indent=1) if r else "SIN RESPUESTA")
+    print(f"\n=== {nombre} · {time.time() - t0:.2f} s")
+    print(json.dumps(osm.resumen(r), ensure_ascii=False, indent=1) if r else "SIN PAQUETE")
+    if r and os.environ.get("CRUDO"):
+        print(json.dumps({k: r[k] for k in ("calles", "senderos", "aguas")}, ensure_ascii=False, indent=1))
