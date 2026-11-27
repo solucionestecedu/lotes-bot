@@ -178,3 +178,11 @@ def test_lectura_con_columnas_invertidas_y_nad27(tmp_path):
     assert r["ok"] and r["resumen"]["area_m2"] == pytest.approx(10000, rel=1e-3)
     x, y = s.get_terreno().puntos[0]
     assert 479600 < x < 480000 + 400 and 289600 < y < 290400 and (x, y) != (480000, 290000)
+
+
+def test_formato_whatsapp_quita_markdown():
+    from agente import formato_whatsapp
+
+    t = formato_whatsapp("*Lotes:* **8 lotes**\n* uno\n- dos\n\n---\n\n## Título\n__x__")
+    assert "**" not in t and "---" not in t and "#" not in t
+    assert "*8 lotes*" in t and "• uno" in t and "• dos" in t and "*Título*" in t and "_x_" in t

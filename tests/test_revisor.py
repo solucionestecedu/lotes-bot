@@ -62,10 +62,10 @@ def test_hueco_en_lote_y_muros_altos():
 def test_revisor_de_laminas_ordena_y_filtra(tmp_path):
     ruta = str(tmp_path / "a.jpg")
     Image.new("RGB", (400, 300), (200, 200, 200)).save(ruta)
-    vistos = {}
+    llamadas = []
 
     def falso(partes, instruccion, esquema):
-        vistos["partes"], vistos["esquema"] = partes, esquema
+        llamadas.append(([p[0] for p in partes], esquema["properties"]["problemas"]["items"]["properties"]["id"]["enum"]))
         return {"problemas": [{"id": "tecnica", "problema": "texto encimado", "gravedad": "media"},
                               {"id": "otra", "problema": "no existe", "gravedad": "alta"},
                               {"id": "porton", "problema": "hay 6 casas y son 9 lotes", "gravedad": "alta"}]}
@@ -73,8 +73,8 @@ def test_revisor_de_laminas_ordena_y_filtra(tmp_path):
     probs = revisor.revisar_laminas(falso, [("tecnica", "Plano técnico", ruta), ("porton", "Vista desde el portón", ruta),
                                             ("lamina", "Lámina PDF", "x.pdf")], "- 9 lotes")
     assert [p["id"] for p in probs] == ["porton", "tecnica"]  # lo grave primero; lo que no es lámina, fuera
-    assert vistos["partes"][0][0] == "[tecnica] Plano técnico" and len(vistos["partes"]) == 2
-    assert vistos["esquema"]["properties"]["problemas"]["items"]["properties"]["id"]["enum"] == ["tecnica", "porton"]
+    # planos y vistas van en dos llamadas (una sola con todo tardaba demasiado)
+    assert sorted(llamadas) == [(["[porton] Vista desde el portón"], ["porton"]), (["[tecnica] Plano técnico"], ["tecnica"])]
 
 
 def test_vista_con_problema_grave_se_repinta_una_vez(tmp_path, caso_chiltiupan):
@@ -90,18 +90,25 @@ def test_vista_con_problema_grave_se_repinta_una_vez(tmp_path, caso_chiltiupan):
         return b.getvalue()
 
     vueltas = []
+    ya = set()
 
     def falso(partes, instruccion, esquema):
-        vueltas.append([p[0] for p in partes])
-        if len(vueltas) == 1:
-            return {"problemas": [{"id": "porton", "problema": "la calle hace curva", "gravedad": "alta"},
-                                  {"id": "tecnica", "problema": "letrero encimado", "gravedad": "media"}]}
-        return {"problemas": []}
+        titulos = [p[0] for p in partes]
+        vueltas.append(titulos)
+        probs = []
+        for t_ in titulos:  # cada lámina trae su problema solo la primera vez que se revisa
+            if t_.startswith("[porton]") and "porton" not in ya:
+                probs.append({"id": "porton", "problema": "la calle hace curva", "gravedad": "alta"})
+                ya.add("porton")
+            if t_.startswith("[tecnica]") and "tecnica" not in ya:
+                probs.append({"id": "tecnica", "problema": "letrero encimado", "gravedad": "media"})
+                ya.add("tecnica")
+        return {"problemas": probs}
 
     out = presentacion.generar(str(tmp_path), "ch", t, lot, m, {"acceso_lado": "norte"}, "Chiltiupán", None, pintor,
                                revisor=falso)
     por = {o["vista"]: o for o in out}
-    assert len(vueltas) == 2 and vueltas[1] == ["[porton] Vista desde el portón (ilustrativa)"]
+    assert len(vueltas) == 3 and vueltas[2] == ["[porton] Vista desde el portón (ilustrativa)"]  # planos, vistas, repaso
     assert por["porton"].get("repintada") and "revision" not in por["porton"]
     assert por["tecnica"]["revision"][0]["problema"] == "letrero encimado" and not por["tecnica"].get("repintada")
     rep = [p for p in pedidos if "CORRECTIONS" in p]
@@ -118,3 +125,13 @@ def test_si_el_revisor_falla_no_se_reporta_sin_problemas(tmp_path):
     assert revisor.revisar_laminas(caido, [("tecnica", "Plano", ruta)], "") is None
     assert revisor.revisar_laminas(None, [("tecnica", "Plano", ruta)], "") is None
     assert revisor.revisar_laminas(lambda *a: {"problemas": []}, [("tecnica", "Plano", ruta)], "") == []
+
+
+def test_rozar_la_punta_de_la_orilla_no_es_llegar_a_la_quebrada():
+    """Un lote que solo roza el extremo de la orilla (0.1 m²) no 'llega a la quebrada' (falso aviso de la prueba real
+    de Chiltiupán: el bot dijo que esa opción no se aprobaría)."""
+    t, lot = _caso()
+    l = lot.lotes[0]
+    l["poly"] = Polygon([(0, 0.45), (0.3, 0.45), (0.3, 30), (0, 30)])
+    c = _por_clave(revisor.revisar(t, lot, None, FICHA))
+    assert c["lotes_fuera_de_la_quebrada"]["ok"]

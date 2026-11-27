@@ -29,6 +29,20 @@ MAX_PASOS = 8
 MAX_HISTORIAL = 24
 
 # ---------------------------------------------------------------------------- sesión
+def formato_whatsapp(t: str) -> str:
+    """El modelo a veces escribe Markdown: WhatsApp usa *negritas* con un asterisco, viñetas como texto y no tiene
+    separadores ni títulos con #."""
+    if not t:
+        return t
+    t = re.sub(r"\*\*(.+?)\*\*", r"*\1*", t, flags=re.S)
+    t = re.sub(r"__(.+?)__", r"_\1_", t, flags=re.S)
+    t = re.sub(r"(?m)^(\s*)[*-] (?=\S)", r"\1• ", t)
+    t = re.sub(r"(?m)^\s*(-{3,}|\*{3,}|_{3,})\s*$\n?", "", t)
+    t = re.sub(r"(?m)^#{1,6}\s*(.+)$", r"*\1*", t)
+    t = re.sub(r"\*{2,}", "*", t)
+    return re.sub(r"\n{3,}", "\n\n", t).strip()
+
+
 @dataclass
 class Sesion:
     id: str
@@ -435,7 +449,7 @@ class Agente:
             texto_final = "Me enredé con tantos pasos. ¿Qué necesitas que haga ahora?"
         s.historial += [{"rol": "usuario", "texto": entrada}, {"rol": "modelo", "texto": texto_final}]
         s.historial = s.historial[-MAX_HISTORIAL:]
-        return [{"tipo": "texto", "texto": texto_final}] + salidas
+        return [{"tipo": "texto", "texto": formato_whatsapp(texto_final)}] + salidas
 
     def ejecutar(self, s: Sesion, nombre: str, args: dict, salidas: list) -> dict:
         f = getattr(self, "h_" + nombre, None)
@@ -1052,7 +1066,13 @@ class Agente:
         original, cumplimiento = s.lotes_param, s.cumplimiento  # medir variantes no cambia el prediseño vigente
         medidas, resultados = [], {}
         try:
-            for v in disenador.variantes(s.lotes_param or {}, s.ficha, len(s.partes) > 1 and bool(s.lindero), modo, rango):
+            try:
+                P0 = self._parametros(s)[0]
+                hoy = {"frente": P0.frente, "fondo": P0.fondo, "area_minima": P0.area_minima}
+            except Exception:  # noqa: BLE001
+                hoy = None
+            for v in disenador.variantes(s.lotes_param or {}, s.ficha, len(s.partes) > 1 and bool(s.lindero), modo, rango,
+                                         medidas=hoy):
                 s.lotes_param = v["param"]
                 try:
                     r, filas = self._lotificar(s)

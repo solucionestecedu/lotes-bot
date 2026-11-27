@@ -49,3 +49,13 @@ def test_el_modelo_elige_pero_no_inventa_variantes(tmp_path):
     assert r["eligio"] == "modelo" and [o["titulo"] for o in r["opciones"]] == ["Lotes más grandes"]
     assert r["advertencias"] == ["la calle pasa de 12 %"]
     assert '"id": "A"' in vistos[0] and "área del terreno" in vistos[0]  # el modelo recibe las cifras del motor
+
+
+def test_variantes_automaticas_parten_del_lote_de_la_ficha():
+    """'Más grandes' y 'más chicos' se miden contra el lote con que se diseña hoy (campestre de 600 m²), no contra
+    medidas por defecto (antes 'más grandes' salía con lotes más chicos que los actuales)."""
+    vs = disenador.variantes({}, {}, False, "automatica", None, medidas={"frente": 15, "fondo": 40, "area_minima": 540})
+    grande = next(v for v in vs if "grandes" in v["cambio"])
+    chico = next(v for v in vs if "chicos" in v["cambio"])
+    assert grande["param"]["area_minima"] > 540 > chico["param"]["area_minima"]
+    assert grande["param"]["frente"] > 15 > chico["param"]["frente"]

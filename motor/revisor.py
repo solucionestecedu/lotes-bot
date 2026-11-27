@@ -79,8 +79,8 @@ def revisar(t, lot, malla=None, ficha: dict | None = None, terr: list | None = N
         cubierta = orilla.intersection(prot.buffer(0.5)).length / orilla.length if prot is not None else 0.0
         out.append(_chequeo("franja_cubre_la_orilla", cubierta >= 0.95,
                             f"la franja de protección cubre el {cubierta * 100:.0f} % de la orilla de la quebrada ({lado})"))
-        tocan = [l["id"] for l in lotes if l["poly"].intersection(orilla.buffer(0.5)).length > 0.5
-                 or l["poly"].intersection(orilla.buffer(0.5)).area > 1.0]
+        # un lote "llega a la orilla" si tiene área pegada a ella (no si solo roza la esquina donde termina la franja)
+        tocan = [l["id"] for l in lotes if l["poly"].intersection(orilla.buffer(0.5)).area > 1.0]
         out.append(_chequeo("lotes_fuera_de_la_quebrada", not tocan,
                             f"lotes que llegan a la orilla de la quebrada: {_ids(tocan)}" if tocan
                             else "ningún lote llega a la orilla de la quebrada"))
@@ -188,7 +188,7 @@ def esquema_revisor(ids: list[str]) -> dict:
     }
 
 
-def _jpg(ruta: str, lado: int = 1400) -> bytes:
+def _jpg(ruta: str, lado: int = 1100) -> bytes:
     from PIL import Image
 
     im = Image.open(ruta).convert("RGB")
@@ -210,12 +210,33 @@ def contexto_proyecto(lot, ficha: dict | None, chequeos: list[dict] | None = Non
     return "\n".join(lineas)
 
 
+PLANOS = {"tecnica", "altimetria", "corte", "lamina"}
+
+
 def revisar_laminas(revisor, imagenes: list[tuple[str, str, str]], contexto: str) -> list[dict] | None:
     """`revisor(partes, instruccion, esquema) -> dict`; `imagenes` = [(id, titulo, ruta)].
+    Los planos y las vistas se revisan en dos llamadas en paralelo (una sola con todo tardaba demasiado).
     Devuelve [{id, problema, gravedad}] de lo más grave a lo menos (como mucho 12), o None si no se pudo revisar
-    (sin revisor o falló el modelo): "no se revisó" nunca se reporta como "sin problemas"."""
+    (sin revisor o fallaron las dos llamadas): "no se revisó" nunca se reporta como "sin problemas"."""
     if revisor is None or not imagenes:
         return None
+    planos = [x for x in imagenes if x[0] in PLANOS]
+    vistas = [x for x in imagenes if x[0] not in PLANOS]
+    tandas = [x for x in (planos, vistas) if x]
+    if len(tandas) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            res = list(ex.map(lambda g: _revisar_tanda(revisor, g, contexto), tandas))
+        if all(r is None for r in res):
+            return None
+        orden = {"alta": 0, "media": 1, "baja": 2}
+        todos = [p for r in res if r for p in r]
+        return sorted(todos, key=lambda p: orden.get(p.get("gravedad"), 3))[:12]
+    return _revisar_tanda(revisor, imagenes, contexto)
+
+
+def _revisar_tanda(revisor, imagenes, contexto):
     partes, ids = [], []
     for id_, titulo, ruta in imagenes:
         if not str(ruta).lower().endswith((".jpg", ".jpeg", ".png")):

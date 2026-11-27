@@ -15,7 +15,7 @@ MODELO_VISION = _env("MODELO_VISION", "gemini-3.8-flash")
 # Revisor de la entrega: un modelo que piensa revisa las láminas y vistas antes de mandarlas (vacío = sin revisor).
 # Opciones: gemini-3.8-flash con pensamiento alto (rápido) o gemini-3.1-pro-preview (más fino, más lento).
 MODELO_REVISOR = _env("MODELO_REVISOR", "gemini-3.8-flash")
-PENSAMIENTO_REVISOR = _env("PENSAMIENTO_REVISOR", "high")  # low | medium | high
+PENSAMIENTO_REVISOR = _env("PENSAMIENTO_REVISOR", "medium")  # low | medium | high (high tardó >3 min con 8 láminas)
 # Modelo de imagen (Nano Banana) que pinta la imagen de presentación sobre el trazo exacto. Vacío = sin pintar.
 MODELO_IMAGEN = _env("MODELO_IMAGEN", "gemini-nano-banana-2.1")
 TAMANO_IMAGEN = _env("TAMANO_IMAGEN", "2K")  # 1K | 2K | 4K

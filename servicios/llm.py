@@ -14,6 +14,7 @@ Formato neutro de mensajes que maneja el agente:
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 
@@ -39,6 +40,9 @@ class LLM:
 def _temperatura(modelo: str, valor: float) -> float | None:
     """Gemini 3 en adelante se recomienda con su temperatura por defecto; a los 2.x sí se les baja."""
     return valor if modelo.startswith(("gemini-1", "gemini-2")) else None
+
+
+TIEMPO_REVISOR_S = float(os.environ.get("TIEMPO_REVISOR_S", "75"))  # tope por llamada del revisor y el diseñador
 
 
 class GeminiLLM(LLM):
@@ -132,11 +136,14 @@ class GeminiLLM(LLM):
             model=self.modelo_revisor, contents=contenido,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json", response_json_schema=esquema,
-                thinking_config=types.ThinkingConfig(thinking_level=self.pensamiento_revisor)),
+                thinking_config=types.ThinkingConfig(thinking_level=self.pensamiento_revisor),
+                # una revisión que tarda no puede comerse la entrega: un intento, con tope de tiempo
+                http_options=types.HttpOptions(timeout=int(TIEMPO_REVISOR_S * 1000),
+                                               retry_options=types.HttpRetryOptions(attempts=1))),
         )
         return json.loads(r.text)
 
-    def pensar(self, texto: str, esquema: dict) -> dict:
+    def pensar(self, texto: str, esquema: dict) -> dict:  # noqa: D401
         """Una decisión de diseño con el modelo que piensa (el del revisor): lee las cifras del motor y elige."""
         from google.genai import types
 
@@ -144,7 +151,9 @@ class GeminiLLM(LLM):
             model=self.modelo_revisor or self.modelo_chat, contents=[texto],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json", response_json_schema=esquema,
-                thinking_config=types.ThinkingConfig(thinking_level=self.pensamiento_revisor or "high")),
+                thinking_config=types.ThinkingConfig(thinking_level=self.pensamiento_revisor or "high"),
+                http_options=types.HttpOptions(timeout=int(TIEMPO_REVISOR_S * 1000),
+                                               retry_options=types.HttpRetryOptions(attempts=1))),
         )
         return json.loads(r.text)
 
