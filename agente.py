@@ -219,7 +219,9 @@ HERRAMIENTAS = [
      "lotificación), el KML para Google Earth, el DXF 2D para AutoCAD/Civil 3D y, si ya hay relieve, una vista 3D en "
      "imagen y un modelo 3D (DXF) con terreno, lotes, calles y casas tipo para renderizar en AutoCAD. Se los envía al usuario.",
      "parametros": _obj({"nombre_proyecto": {"type": "string"}, "ubicacion": {"type": "string",
-                         "description": "municipio y departamento"}, "propietario": {"type": "string"}})},
+                         "description": "municipio y departamento"},
+                         "propietario": {"type": "string", "description": "solo si el usuario lo da por su cuenta: no lo "
+                                         "pidas (no transcribimos nombres de personas)"}})},
 ]
 
 _ESQ_TERRENO = {
@@ -320,6 +322,10 @@ FLUJO:
       relieve, calle y servicios, relieve, cumplimiento, opciones legales a validar con notario y siguientes pasos.
    b) CARPETA TÉCNICA: plano técnico (planimetría con medidas), plano altimétrico (pendientes, curvas de nivel, perfil
       de la calle y relieve por lote), lámina PDF con el cuadro de cumplimiento, DXF 2D y 3D y KML.
+   b1) Al entregar: no pidas el nombre del propietario. Antes de generar, basta el nombre del proyecto (si no lo dan,
+      usa uno sencillo con el lugar). Después, di en 2 o 3 líneas qué llegó y lo importante de la revisión; no describas
+      el contenido de los archivos con detalles que no vengan en el resultado de la herramienta (número de hojas,
+      escalas, capas): los archivos ya llegan con su título.
    b2) La carpeta técnica también trae el CORTE TRANSVERSAL con la terracería: cada lote escalonado en terrazas que
       siguen el terreno, la de la casa pegada a la calle y a no más de 1.5 m de su nivel (el carro entra por una rampa
       de ≤ 15 %), y los cambios de nivel resueltos con MUROS DE CONTENCIÓN (altura de cada muro; los de más de 3 m
