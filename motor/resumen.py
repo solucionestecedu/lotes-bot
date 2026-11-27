@@ -122,7 +122,7 @@ def _datos_opamss(op: dict) -> list[tuple[str, str]]:
         trat = " · ".join(f"{z['pct']:.0f} % {z['tratamiento']}" for z in zonas if z.get("tratamiento"))
         if trat:
             out.append(("Tratamiento urbanístico", trat))
-        z0 = zonas[0]
+        z0 = next((z for z in zonas if z.get("codigo") != "NUR"), zonas[0])
         lim = []
         if z0.get("altura_base"):
             lim.append(f"altura hasta {z0['altura_base']} niveles"

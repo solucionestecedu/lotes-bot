@@ -14,7 +14,7 @@ import math
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
-from shapely.geometry import LineString, MultiLineString, Polygon
+from shapely.geometry import MultiLineString, Point, Polygon
 from shapely.ops import unary_union
 
 from motor import proyeccion
@@ -119,18 +119,57 @@ def _codigo_clase(texto) -> str | None:
     return None
 
 
+def _muestras(terreno: Polygon, n: int = 30) -> list[tuple[float, float]]:
+    """Puntos repartidos dentro del terreno (cuadrícula), para ver en qué zona cae cada parte."""
+    paso = max(math.sqrt(terreno.area / n), 1.0)
+    x0, y0, x1, y1 = terreno.bounds
+    pts = []
+    y = y0 + paso / 2
+    while y < y1:
+        x = x0 + paso / 2
+        while x < x1:
+            if terreno.contains(Point(x, y)):
+                pts.append((x, y))
+            x += paso
+        y += paso
+    return pts or [tuple(terreno.representative_point().coords[0])]
+
+
 def _uso_suelo(http, poli_wgs, terreno: Polygon) -> list[dict]:
     d = _consulta(http, USO_SUELO, poli_wgs, "esriGeometryPolygon", "*", geometria_salida=True)
+    feats = d.get("features") or []
+    if not feats:
+        return []
     zonas: dict[tuple, float] = {}
     attrs: dict[tuple, dict] = {}
-    for f in d.get("features") or []:
+    por_id: dict = {}
+    for f in feats:
         a = {k.lower(): v for k, v in (f.get("attributes") or {}).items()}
-        g = _poligono(f.get("geometry"))
-        area = g.intersection(terreno).area if g is not None else 0.0
         clave = tuple(a.get(k) for k in CAMPOS_USO)
-        zonas[clave] = zonas.get(clave, 0.0) + area
         attrs[clave] = a
+        por_id[a.get("objectid")] = clave
+        g = _poligono(f.get("geometry"))
+        if g is not None:
+            zonas[clave] = zonas.get(clave, 0.0) + g.intersection(terreno).area
     total = terreno.area or 1.0
+    if not zonas and len(attrs) == 1:  # una sola zona: todo el terreno
+        zonas = {next(iter(attrs)): total}
+    elif not zonas:
+        # el servidor no manda los polígonos de esta capa: se pregunta en qué zona cae cada punto de una cuadrícula
+        pts = _muestras(terreno)
+
+        def zona_de(p):
+            lat, lng = proyeccion.a_latlng(*p)
+            r = _consulta(http, USO_SUELO, {"x": lng, "y": lat, "spatialReference": {"wkid": 4326}},
+                          "esriGeometryPoint", "objectid")
+            ids = [(f.get("attributes") or {}).get("objectid", (f.get("attributes") or {}).get("OBJECTID"))
+                   for f in r.get("features") or []]
+            return next((por_id[i] for i in ids if i in por_id), None)
+
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for clave in ex.map(zona_de, pts):
+                if clave is not None:
+                    zonas[clave] = zonas.get(clave, 0.0) + total / len(pts)
     out = []
     for clave, area in sorted(zonas.items(), key=lambda kv: -kv[1]):
         if area < 0.005 * total and len(zonas) > 1:

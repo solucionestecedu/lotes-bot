@@ -304,7 +304,8 @@ def filas_opamss(lot, op: dict) -> list[dict]:
                                "revisar" if sens else "cumple",
                                " ".join(f"{z['pct']:.0f} % en {TRATAMIENTOS_SENSIBLES[c]}." for z, c in sens)))
 
-        z0 = zonas[0]  # la zona con más área manda en las cifras por lote
+        # las cifras por lote salen de la zona con más área donde sí se puede construir
+        z0 = next((z for z in zonas if z.get("codigo") != "NUR"), zonas[0])
         casas = _casas(lot)
         areas = [l["area"] for l in lot.lotes]
         if z0.get("altura_base"):

@@ -40,7 +40,7 @@ def resumen_opamss(op: dict) -> dict:
     if zonas:
         out["clasificacion_del_suelo"] = [f"{z['pct']:.0f} % {z.get('clasificacion') or z.get('codigo')}" +
                                           (f" ({z['tratamiento']})" if z.get("tratamiento") else "") for z in zonas]
-        z0 = zonas[0]
+        z0 = next((z for z in zonas if z.get("codigo") != "NUR"), zonas[0])
         if any(z.get("codigo") == "NUR" and z["pct"] >= 5 for z in zonas):
             out["alerta"] = "parte del terreno es suelo NO urbanizable: ahí no se puede lotificar"
         limites = []

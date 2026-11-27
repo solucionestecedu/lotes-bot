@@ -152,3 +152,61 @@ def test_el_bot_lo_consulta_en_el_amss_y_lo_lleva_al_cuadro(tmp_path, monkeypatc
     assert "Edificabilidad (IEN)" in reglas
     s.set_terreno(s.get_terreno())                            # reubicar borra lo consultado
     assert s.opamss is None
+
+
+class ServidorSinPoligonos(ServidorFalso):
+    """Como el servidor real: la capa de uso de suelo no manda polígonos; para saber el % se pregunta por puntos."""
+
+    def __init__(self, zonas):
+        super().__init__({})
+        self.zonas = zonas  # [(atributos con objectid, Polygon en Lambert)]
+
+    def get(self, url, params=None, timeout=None):
+        capa = int(urlparse(url).path.rstrip("/").split("/")[-2])
+        if capa != opamss.USO_SUELO:
+            return super().get(url, params, timeout)
+        self.pedidos.append((capa, params))
+        g = json.loads(params["geometry"])
+        if params["geometryType"] == "esriGeometryPoint":
+            from shapely.geometry import Point
+            x, y = proyeccion.a_lambert(g["y"], g["x"])
+            feats = [{"attributes": a} for a, poly in self.zonas if poly.contains(Point(x, y))]
+        else:
+            feats = [{"attributes": a} for a, poly in self.zonas if poly.intersects(Polygon(ANILLO))]
+        d = {"features": feats}
+
+        class R:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return d
+        return R()
+
+
+def test_porcentajes_preguntando_por_puntos():
+    """El lote A real: parte en suelo no urbanizable (conservación) y parte urbano con mitigación."""
+    nur = ({"objectid": 920, "des_clas": "Suelo No Urbanizable", "des_tra": "Conservacion ambiental (CAM)",
+            "des_apt": "NA", "alt_bas": 0, "alt_amp": 0, "imp_base": 0, "imp_amp": 0, "ien_base": 0.0, "ien_amplia": 0.0},
+           Polygon([(X0 - 10, Y0 - 10), (X0 + 40, Y0 - 10), (X0 + 40, Y0 + 70), (X0 - 10, Y0 + 70)]))
+    urb = ({"objectid": 937, "des_clas": "Suelo Urbano", "des_tra": "Mitigacion (MIT)",
+            "des_apt": "Proteccion ambiental MIT4", "alt_bas": 2, "alt_amp": 2, "imp_base": 25, "imp_amp": 50,
+            "ien_base": 1.1, "ien_amplia": 1.1},
+           Polygon([(X0 + 40, Y0 - 10), (X0 + 110, Y0 - 10), (X0 + 110, Y0 + 70), (X0 + 40, Y0 + 70)]))
+    op = opamss.consultar(ANILLO, http=ServidorSinPoligonos([nur, urb]))
+    zonas = {z["codigo"]: z for z in op["uso_suelo"]}
+    assert zonas["NUR"]["pct"] == pytest.approx(40, abs=8) and zonas["URB"]["pct"] == pytest.approx(60, abs=8)
+    assert op["uso_suelo"][0]["codigo"] == "URB"
+    filas = {f["regla"]: f for f in normas.filas_opamss(type("L", (), {"lotes": [], "calles": [], "angulo": 0.0})(), op)}
+    assert filas["Clasificación del suelo"]["estado"] == "no_cumple"
+    assert "Suelo No Urbanizable" in filas["Clasificación del suelo"]["proyecto"]
+    assert filas["Tratamiento urbanístico"]["estado"] == "revisar"  # conservación ambiental y mitigación
+    # los límites salen de la zona donde sí se puede construir, aunque la no urbanizable fuera la más grande
+    op["uso_suelo"].reverse()
+    filas = {f["regla"]: f for f in normas.filas_opamss(type("L", (), {"lotes": [], "calles": [], "angulo": 0.0})(), op)}
+    assert filas["Altura máxima"]["requerido"].startswith("2 niveles")
+    # una sola zona: 100 % sin preguntar por puntos
+    srv = ServidorSinPoligonos([urb])
+    op = opamss.consultar(ANILLO, http=srv)
+    assert op["uso_suelo"][0]["pct"] == 100.0
+    assert not any(p["geometryType"] == "esriGeometryPoint" for c, p in srv.pedidos if c == opamss.USO_SUELO)
