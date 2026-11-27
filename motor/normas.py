@@ -236,6 +236,135 @@ def revisar(lot, terreno, malla=None, ficha: dict | None = None) -> list[dict]:
         filas.append(_fila("Calles sin salida", "RLUC Art. 87", "plazoleta de retorno",
                            f"redondel de {d_ret:.0f} m" if d_ret else "por definir", "revisar",
                            "Los retornos (redondel, T o L) solo se permiten en vías de reparto y accesos rodados."))
+
+    # 12. Lo que dice la OPAMSS del lugar (Esquema Director, consultado en su geovisor)
+    if ficha.get("opamss"):
+        filas += filas_opamss(lot, ficha["opamss"])
+    return filas
+
+
+ED = "Esquema Director AMSS"
+TRATAMIENTOS_SENSIBLES = {
+    "CAM": "conservación ambiental: el Esquema Director protege esta zona y casi no admite urbanizar",
+    "RAM": "recuperación ambiental: zona a recuperar, no a urbanizar",
+    "MIT": "mitigación: zona con riesgo que pide obras de mitigación antes de construir",
+    "DAG": "desarrollo agropecuario: zona para producción, no para lotes habitacionales",
+}
+
+
+def _codigo_tratamiento(texto) -> str | None:
+    import re
+
+    m = re.search(r"\((\w+)\)+\s*$", str(texto or ""))
+    return m.group(1).upper() if m else None
+
+
+def _casas(lot) -> list[float]:
+    """Área de la casa tipo (un nivel) de cada lote, como la dibuja el motor."""
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+
+    from .modelo3d import huella_casa
+
+    calles = unary_union(lot.calles) if lot.calles else None
+    out = []
+    for l in lot.lotes:
+        try:
+            esq = huella_casa(l, calles, lot.angulo)
+        except Exception:  # noqa: BLE001
+            esq = None
+        out.append(Polygon(esq).area if esq else 0.0)
+    return out
+
+
+def filas_opamss(lot, op: dict) -> list[dict]:
+    """Filas del cuadro con lo que dice el geovisor de la OPAMSS: clasificación y tratamiento del suelo, alturas,
+    impermeabilización y edificabilidad, vías proyectadas y peligros. Fuente en cada fila."""
+    filas = []
+    zonas = [z for z in op.get("uso_suelo") or [] if z.get("pct", 0) > 0]
+    if zonas:
+        txt = " · ".join(f"{z['pct']:.0f} % {z.get('clasificacion') or z.get('codigo')}" for z in zonas)
+        nur = sum(z["pct"] for z in zonas if z.get("codigo") == "NUR")
+        rur = sum(z["pct"] for z in zonas if z.get("codigo") == "RUR")
+        if nur >= 5:
+            estado, nota = "no_cumple", (f"El {nur:.0f} % del terreno es suelo no urbanizable: ahí no se puede lotificar. "
+                                         "Confirmarlo con una calificación de lugar en la OPAMSS.")
+        elif rur >= 5:
+            estado, nota = "revisar", ("En suelo rural el Esquema Director limita los usos: pedir calificación de lugar a "
+                                       "la OPAMSS para saber si admite lotificación y con qué densidad.")
+        else:
+            estado, nota = "cumple", ""
+        filas.append(_fila("Clasificación del suelo", f"{ED}, Anexo 25", "suelo urbano o urbanizable", txt, estado, nota))
+
+        sens = [(z, _codigo_tratamiento(z.get("tratamiento"))) for z in zonas]
+        sens = [(z, c) for z, c in sens if c in TRATAMIENTOS_SENSIBLES and z["pct"] >= 5]
+        trat = " · ".join(f"{z['pct']:.0f} % {z.get('tratamiento')}" for z in zonas if z.get("tratamiento"))
+        if trat:
+            filas.append(_fila("Tratamiento urbanístico", f"{ED}, Anexo 26", "compatible con lotificación", trat,
+                               "revisar" if sens else "cumple",
+                               " ".join(f"{z['pct']:.0f} % en {TRATAMIENTOS_SENSIBLES[c]}." for z, c in sens)))
+
+        z0 = zonas[0]  # la zona con más área manda en las cifras por lote
+        casas = _casas(lot)
+        areas = [l["area"] for l in lot.lotes]
+        if z0.get("altura_base"):
+            amp = f" ({z0['altura_ampliada']} con ampliación)" if z0.get("altura_ampliada") else ""
+            filas.append(_fila("Altura máxima", f"{ED}, Anexo 32", f"{z0['altura_base']} niveles{amp}",
+                               "casa tipo de 1 nivel", "cumple" if float(z0["altura_base"]) >= 1 else "revisar"))
+        if z0.get("impermeabilizacion_base") and areas:
+            lim = float(z0["impermeabilizacion_base"])
+            pcts = [100 * c / a for c, a in zip(casas, areas) if a > 0 and c > 0]
+            peor = max(pcts) if pcts else 0.0
+            amp = (f" ({z0['impermeabilizacion_ampliada']} % con ampliación)"
+                   if z0.get("impermeabilizacion_ampliada") else "")
+            filas.append(_fila("Impermeabilización por lote", f"{ED}, Anexo 33", f"hasta {lim:g} % del lote{amp}",
+                               f"casa tipo: hasta {peor:.0f} % del lote", "cumple" if peor <= lim else "revisar",
+                               f"En un lote de {sum(areas) / len(areas):,.0f} m² se pueden techar o pavimentar hasta "
+                               f"{lim / 100 * sum(areas) / len(areas):,.0f} m² (casa, cochera, patios)."))
+        if z0.get("edificabilidad_base") and areas:
+            ien = float(z0["edificabilidad_base"])
+            usado = max((c / a for c, a in zip(casas, areas) if a > 0), default=0.0)
+            filas.append(_fila("Edificabilidad (IEN)", f"{ED}, Anexo 34", f"hasta {ien:g} × área del lote",
+                               f"casa tipo: {usado:.2f} × área", "cumple" if usado <= ien else "revisar",
+                               f"En el lote promedio caben hasta {ien * sum(areas) / len(areas):,.0f} m² de construcción."))
+
+    vias = op.get("vias") or {}
+    pr = vias.get("proyectada")
+    if pr and pr.get("cruza_m", 0) > 1:
+        filas.append(_fila("Vía proyectada", f"{ED}, Anexo 28", "respetar el derecho de vía",
+                           f"cruza el terreno ({pr['cruza_m']:,.0f} m)", "revisar",
+                           "El Esquema Director proyecta una vía que pasa por el terreno: puede quitar lotes o cambiar el "
+                           "trazo. Pedir a la OPAMSS el derecho de vía."))
+    elif pr and pr.get("distancia_m") is not None and pr["distancia_m"] <= 30:
+        filas.append(_fila("Vía proyectada", f"{ED}, Anexo 28", "respetar el derecho de vía",
+                           f"a {pr['distancia_m']:,.0f} m del terreno", "revisar",
+                           "Hay una vía proyectada pegada al terreno: confirmar su ancho con la OPAMSS."))
+
+    peligros = []
+    if op.get("zona_tectonica"):
+        peligros.append("zona de mayor densidad tectónica")
+    if op.get("peligro_volcanico"):
+        peligros.append("zona de mayor peligro volcánico")
+    altas = [p for p in op.get("peligrosidad_superficial") or []
+             if str(p.get("valor", "")).strip().lower() in ("alta", "muy alta") and p.get("pct", 0) >= 5]
+    for p in altas:
+        peligros.append(f"{p['pct']:.0f} % con peligrosidad {str(p['valor']).lower()} por dinámica superficial")
+    if peligros:
+        filas.append(_fila("Peligros del lugar", f"{ED}, Anexos 22 y 28", "estudios según el peligro",
+                           "; ".join(peligros), "revisar",
+                           "Pedir estudio geotécnico (suelos y estabilidad de taludes) y diseño sísmico; en zonas de "
+                           "dinámica superficial, obras de drenaje y protección de laderas."))
+    elif op.get("uso_suelo") is not None and op.get("peligrosidad_superficial") is not None:
+        filas.append(_fila("Peligros del lugar", f"{ED}, Anexos 22 y 28", "sin peligro alto", "no se marca peligro alto",
+                           "cumple"))
+
+    falta = op.get("no_se_pudo_consultar") or []
+    if falta:
+        filas.append(_fila("Datos de la OPAMSS", "Geovisor OPAMSS", "consulta completa",
+                           "no respondió: " + ", ".join(f.replace("_", " ") for f in falta), "falta_dato",
+                           "El servidor de la OPAMSS no contestó esa parte; volver a consultar."))
+    for f in filas:
+        f["fuente"] = op.get("fuente")
     return filas
 
 

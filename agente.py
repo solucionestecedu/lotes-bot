@@ -25,6 +25,7 @@ from motor.lotificacion import (LADOS, ErrorLotificacion, Parametros, franja_de_
                                 punto_de_acceso)
 from motor.rumbos import M2_POR_V2, ErrorRumbo, leer_rumbo, poligonal
 from motor.terreno import Terreno, desde_coordenadas, desde_texto_rumbos, desde_tramos, verificar_con_coordenadas
+from servicios import opamss as geovisor_opamss
 from servicios.llm import LLM
 
 log = logging.getLogger("lotes-bot.agente")
@@ -32,6 +33,43 @@ MAX_PASOS = 8
 MAX_HISTORIAL = 24
 
 # ---------------------------------------------------------------------------- sesión
+def resumen_opamss(op: dict) -> dict:
+    """Lo esencial del geovisor de la OPAMSS para que el bot se lo diga al usuario (con su fuente)."""
+    out = {"fuente": op.get("fuente")}
+    zonas = op.get("uso_suelo") or []
+    if zonas:
+        out["clasificacion_del_suelo"] = [f"{z['pct']:.0f} % {z.get('clasificacion') or z.get('codigo')}" +
+                                          (f" ({z['tratamiento']})" if z.get("tratamiento") else "") for z in zonas]
+        z0 = zonas[0]
+        if any(z.get("codigo") == "NUR" and z["pct"] >= 5 for z in zonas):
+            out["alerta"] = "parte del terreno es suelo NO urbanizable: ahí no se puede lotificar"
+        limites = []
+        if z0.get("altura_base"):
+            limites.append(f"altura hasta {z0['altura_base']} niveles")
+        if z0.get("impermeabilizacion_base"):
+            limites.append(f"impermeabilizar hasta el {z0['impermeabilizacion_base']} % de cada lote")
+        if z0.get("edificabilidad_base"):
+            limites.append(f"edificabilidad hasta {z0['edificabilidad_base']} × el área del lote")
+        if limites:
+            out["limites"] = limites
+    v = (op.get("vias") or {})
+    if v.get("proyectada") and v["proyectada"].get("cruza_m", 0) > 1:
+        out["via_proyectada"] = f"una vía proyectada del Esquema Director cruza el terreno ({v['proyectada']['cruza_m']:.0f} m)"
+    cercanas = [f"vía {k} a {d['distancia_m']:.0f} m" for k, d in v.items() if d and k != "proyectada"
+                and d.get("distancia_m") is not None]
+    if cercanas:
+        out["vias_cercanas"] = cercanas
+    peligros = [n for k, n in (("zona_tectonica", "zona de mayor densidad tectónica"),
+                               ("peligro_volcanico", "zona de mayor peligro volcánico")) if op.get(k)]
+    peligros += [f"{p['pct']:.0f} % peligrosidad {str(p['valor']).lower()} por dinámica superficial"
+                 for p in op.get("peligrosidad_superficial") or [] if str(p.get("valor", "")).lower() in ("alta", "muy alta")]
+    if peligros:
+        out["peligros"] = peligros
+    if op.get("no_se_pudo_consultar"):
+        out["sin_respuesta"] = op["no_se_pudo_consultar"]
+    return out
+
+
 AVISO_PIN = ("Para ubicar el terreno necesito coordenadas, no la ubicación del teléfono (no es exacta). Mándame la X y "
              "la Y (Lambert) de cualquier mojón, como vienen en el plano o te las da el topógrafo, por ejemplo: "
              "Mo. 1  X 473280.68  Y 289049.93")
@@ -67,6 +105,7 @@ class Sesion:
     cumplimiento: list = field(default_factory=list)           # último cuadro de cumplimiento
     partes: list = field(default_factory=list)                 # terrenos unidos: [{"origen", "anillo"}] relativos al centroide
     lindero: list | None = None                                # lindero común de los terrenos unidos (relativo al centroide)
+    opamss: dict | None = None                                 # lo que dice el geovisor de la OPAMSS del terreno
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def get_terreno(self) -> Terreno | None:
@@ -78,6 +117,7 @@ class Sesion:
         self.lotes_param = None
         self.lotes_stats = None
         self.cumplimiento = []
+        self.opamss = None
 
     def get_malla(self):
         return relieve.Malla.de_dict(self.malla) if self.malla else None
@@ -335,6 +375,9 @@ FLUJO:
    lotes_por_lado=[mín, máx]; tipo campestre. Con dos terrenos unidos la calle va sobre el lindero común y cada lado es
    un terreno; por defecto la calle va completa dentro del terreno más grande, pegada al lindero (calle_sobre). No
    calcules el tamaño de lote tú: el motor reparte y te dice cuánto queda.
+   Si "encontrado" trae "opamss", dile en 2 o 3 líneas lo que dice la OPAMSS del lugar ("según la OPAMSS"): la
+   clasificación del suelo, los límites (altura, impermeabilización, edificabilidad) y si hay peligros o una vía
+   proyectada. Si trae "alerta" (suelo no urbanizable), dilo primero y claro.
    Si guardar_ficha trae "revisar_quebrada", NO prediseñes todavía: dile al usuario en una línea lo que muestra el
    relieve y pregúntale si de verdad colinda con esa quebrada.
    Si el plano ya dice las colindancias (calle, quebrada), úsalas y solo confírmalas. Si el usuario dice "usa lo
@@ -862,7 +905,7 @@ class Agente:
                 barr_zonas = list(barr)
         ficha_normas = {"zona": zona, "tipo": f.get("tipo"), "protecciones": prot, "cerrado": f.get("cerrado"),
                         "barrancos_m2": barr_m2, "barrancos_zonas": [b for b in excluir if any(b is x for x in barr_zonas)],
-                        "figura": f.get("figura"),
+                        "figura": f.get("figura"), "opamss": s.opamss,
                         "quebrada_sin_datos": (any(c.get("tipo") in ("quebrada", "rio") for c in f.get("del_plano", []))
                                                and not f.get("quebradas") and not f.get("sin_quebradas"))}
         return Parametros.de_dict(base), excluir, ficha_normas
@@ -1079,6 +1122,13 @@ class Agente:
                 ficha["zona"] = "amss"
                 enc["zona"] = ("dentro del Área Metropolitana de San Salvador: el permiso va por la OPAMSS y aplican sus "
                                "normas (área verde 10 % del área útil)")
+                try:  # lo que dice la OPAMSS del lugar (Esquema Director): las mismas capas que su plataforma NIX
+                    s.opamss = geovisor_opamss.consultar(t.puntos)
+                except Exception:  # noqa: BLE001
+                    log.exception("geovisor OPAMSS")
+                    s.opamss = None
+                enc["opamss"] = (resumen_opamss(s.opamss) if s.opamss else
+                                 "no se pudo consultar el geovisor de la OPAMSS (se puede volver a intentar)")
         plano = s.ficha.get("del_plano") or []
         calles = [c["lado"] for c in plano if c.get("tipo") == "calle" and c.get("lado") in LADOS]
         if calles:
@@ -1306,8 +1356,8 @@ class Agente:
                 rpdf = os.path.join(carpeta, f"{base}-resumen-ejecutivo.pdf")
                 cx, cy = t.centroide()
                 partes_r = [{**p, "anillo": [(x + cx, y + cy) for x, y in p["anillo"]]} for p in s.partes] or None
-                res = generar_resumen(rpdf, t, lot, m if t.ubicado else None, s.ficha, nombre, partes_r,
-                                      s.proyecto.get("ubicacion", ""), filas, img_res, entrega)
+                res = generar_resumen(rpdf, t, lot, m if t.ubicado else None, dict(s.ficha, opamss=s.opamss), nombre,
+                                      partes_r, s.proyecto.get("ubicacion", ""), filas, img_res, entrega)
                 avisos = res["avisos"]
                 from motor.revisor import avisos_de_revision
 

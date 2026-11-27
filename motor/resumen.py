@@ -113,6 +113,55 @@ def cuadro_areas(t: Terreno, lot: Resultado, partes: list | None) -> dict:
     return {"terrenos": [n for n, _ in piezas], "bruta": bruta, "filas": filas, "total": prop.area}
 
 
+def _datos_opamss(op: dict) -> list[tuple[str, str]]:
+    zonas = op.get("uso_suelo") or []
+    out = []
+    if zonas:
+        out.append(("Clasificación del suelo", " · ".join(f"{z['pct']:.0f} % {z.get('clasificacion') or z.get('codigo')}"
+                                                          for z in zonas)))
+        trat = " · ".join(f"{z['pct']:.0f} % {z['tratamiento']}" for z in zonas if z.get("tratamiento"))
+        if trat:
+            out.append(("Tratamiento urbanístico", trat))
+        z0 = zonas[0]
+        lim = []
+        if z0.get("altura_base"):
+            lim.append(f"altura hasta {z0['altura_base']} niveles"
+                       + (f" ({z0['altura_ampliada']} con ampliación)" if z0.get("altura_ampliada") else ""))
+        if z0.get("impermeabilizacion_base"):
+            lim.append(f"impermeabilización hasta {z0['impermeabilizacion_base']} % del lote"
+                       + (f" ({z0['impermeabilizacion_ampliada']} % con ampliación)"
+                          if z0.get("impermeabilizacion_ampliada") else ""))
+        if z0.get("edificabilidad_base"):
+            lim.append(f"edificabilidad (IEN) hasta {z0['edificabilidad_base']}"
+                       + (f" ({z0['edificabilidad_ampliada']} con ampliación)" if z0.get("edificabilidad_ampliada") else ""))
+        if lim:
+            out.append(("Límites para construir", "; ".join(lim)))
+    v = op.get("vias") or {}
+    txt_v = []
+    for k, nombre in (("mayor", "vía de circulación mayor"), ("menor", "vía de circulación menor"),
+                      ("proyectada", "vía proyectada")):
+        d = v.get(k)
+        if d and d.get("cruza_m", 0) > 1:
+            txt_v.append(f"{nombre}: cruza el terreno ({d['cruza_m']:,.0f} m)")
+        elif d and d.get("distancia_m") is not None:
+            txt_v.append(f"{nombre} a {d['distancia_m']:,.0f} m")
+    if txt_v:
+        out.append(("Vías del Esquema Director", "; ".join(txt_v)))
+    pel = [n for k, n in (("zona_tectonica", "zona de mayor densidad tectónica"),
+                          ("peligro_volcanico", "zona de mayor peligro volcánico")) if op.get(k)]
+    pel += [f"{p['pct']:.0f} % con peligrosidad {str(p['valor']).lower()} por dinámica superficial"
+            for p in op.get("peligrosidad_superficial") or []]
+    if pel:
+        out.append(("Peligros", "; ".join(pel)))
+    rec = op.get("recarga_mm_anio") or []
+    if rec:
+        out.append(("Recarga acuífera", " · ".join(f"{r['pct']:.0f} % con {r['valor']} mm/año" for r in rec)))
+    if op.get("no_se_pudo_consultar"):
+        out.append(("Sin respuesta", "el servidor no contestó: " + ", ".join(x.replace("_", " ")
+                                                                            for x in op["no_se_pudo_consultar"])))
+    return out
+
+
 def generar_resumen(ruta: str, t: Terreno, lot: Resultado, malla, ficha: dict | None, proyecto: str,
                     partes: list | None = None, ubicacion: str = "", cumplimiento: list | None = None,
                     imagen: str | None = None, entrega: dict | None = None) -> dict:
@@ -320,6 +369,20 @@ def generar_resumen(ruta: str, t: Terreno, lot: Resultado, malla, ficha: dict | 
     td = Table([[P(a, "cb"), P(b, "c")] for a, b in datos], colWidths=[W * 0.24, W * 0.76])
     td.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.3, LINEA), ("VALIGN", (0, 0), (-1, -1), "TOP")]))
     story.append(td)
+
+    # ------------------------------------------------------------------ lo que dice la OPAMSS del lugar
+    op = ficha.get("opamss")
+    if op:
+        story.append(P(f"{num}. Lo que dice la OPAMSS del lugar (Esquema Director)", "h"))
+        num += 1
+        filas_op = _datos_opamss(op)
+        if filas_op:
+            to = Table([[P(a, "cb"), P(b, "c")] for a, b in filas_op], colWidths=[W * 0.24, W * 0.76])
+            to.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.3, LINEA), ("VALIGN", (0, 0), (-1, -1), "TOP")]))
+            story.append(to)
+        story.append(P(f"Fuente: {op.get('fuente', 'geovisor de la OPAMSS')}, consultado el "
+                       f"{datetime.date.today():%d/%m/%Y}. Es información de referencia: la calificación de lugar de la OPAMSS es "
+                       "la que vale para el trámite.", "pg"))
 
     # ------------------------------------------------------------------ relieve
     if rel:
