@@ -32,6 +32,11 @@ VERDE, VERDE_TXT, AGUA = (92, 140, 80), (60, 100, 52), (88, 128, 168)
 MESES = ["ene.", "feb.", "mar.", "abr.", "may.", "jun.", "jul.", "ago.", "sep.", "oct.", "nov.", "dic."]
 
 
+def _unir_lineas(g):
+    """linemerge que acepta una sola línea (un lado con un solo tramo de lindero)."""
+    return g if g.geom_type == "LineString" else linemerge(g)
+
+
 def _f(tam: float, negrita: bool = False):
     from .presentacion import _fuente
 
@@ -201,7 +206,7 @@ def generar_tecnico(t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict
                         cambio = True
             bordes = sel or bordes
         if bordes:
-            via = linemerge(unary_union(bordes)).buffer(8.0, cap_style=2, join_style=1)
+            via = _unir_lineas(unary_union(bordes)).buffer(8.0, cap_style=2, join_style=1)
             via = via.difference(prop.buffer(0.6)).intersection(geo)
             poli(via, fill=(238, 238, 238), outline=(140, 140, 140), w=0.9)
             acceso = max(_poligonos(via), key=lambda g: g.area, default=None)
@@ -359,7 +364,11 @@ def generar_tecnico(t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict
         boca = calles_u.boundary.intersection(prop.exterior.buffer(0.4))
         tramos_b = [g for g in getattr(boca, "geoms", [boca]) if g.geom_type == "LineString" and g.length > 1]
         if tramos_b and ficha.get("cerrado"):
-            bo = min(tramos_b, key=lambda g: g.distance(Point(entrada))) if entrada else max(tramos_b, key=lambda g: g.length)
+            if st.get("un_lado") and st.get("boca_calle"):
+                bo = LineString(st["boca_calle"])
+            else:
+                bo = (min(tramos_b, key=lambda g: g.distance(Point(entrada))) if entrada
+                      else max(tramos_b, key=lambda g: g.length))
             pa, pb = bo.coords[0], bo.coords[-1]
             mid = ((pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2)
             interior = calles_u.buffer(-2.5)
@@ -417,7 +426,7 @@ def generar_tecnico(t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict
     # calle, redondel, portón
     ancho_c = lot.parametros.get("calle", 8)
     if lot.calles:
-        nombre_c = "CALLE CENTRAL" if st.get("modo") == "calle_central" else "CALLE"
+        nombre_c = "CALLE CENTRAL" if st.get("modo") == "calle_central" and not st.get("un_lado") else "CALLE"
         if st.get("modo") == "calle_central" and entrada and retorno:
             ej = LineString([entrada, retorno])
             ang = math.degrees(math.atan2(retorno[1] - entrada[1], retorno[0] - entrada[0]))
@@ -470,7 +479,22 @@ def generar_tecnico(t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict
         texto((bx + 14, by), "PORTÓN Y\nCASETA", 10.5, True, (60, 60, 60), anchor="lm", halo=2)
     if acceso is not None:
         p = acceso.representative_point()
-        texto(a_px(p.x, p.y), "CALLE DE ACCESO", 11.5, True, (90, 90, 90), halo=2)
+        xy = a_px(p.x, p.y)
+        if porton is not None and math.dist(xy, a_px(*porton)) < 70:  # no encimar con el portón: más allá en la calle
+            c_ = acceso.centroid
+            cands = []
+            for i_ in range(40):
+                q = acceso.exterior.interpolate(i_ / 40, normalized=True)
+                q = Point(q.x + 0.35 * (c_.x - q.x), q.y + 0.35 * (c_.y - q.y))
+                if acceso.contains(q):
+                    cands.append(a_px(q.x, q.y))
+            if cands:
+                xy = max(cands, key=lambda c: math.dist(c, a_px(*porton)))
+        texto(xy, "CALLE DE ACCESO", 11.5, True, (90, 90, 90), halo=2)
+    for e in lot.equipamiento:
+        if e["area"] > 20:
+            q = e["poly"].representative_point()
+            texto(a_px(q.x, q.y), "EQ", 10.5, True, (62, 109, 153), halo=2)
     for v in sorted(lot.verdes, key=lambda v: -v["area"])[:1]:
         if v["area"] > 60:
             try:
@@ -489,13 +513,13 @@ def generar_tecnico(t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict
                 except Exception:  # noqa: BLE001
                     q_ = otra.representative_point()
                 texto(a_px(q_.x, q_.y), "CAÍDA FUERTE\nno se lotifica", 11, True, VERDE_TXT)
-        try:
-            p = polylabel(prot, tolerance=0.5)
-        except Exception:  # noqa: BLE001
-            p = prot.representative_point()
-        franja = next((f" · FRANJA {1.5 * float(q['profundidad_m']):.2f} m" for q in ficha.get("quebradas") or []
-                       if q.get("profundidad_m")), "")
-        if ficha.get("quebradas") or len(lot.protecciones) == 1:
+        if prot is not None:
+            try:
+                p = polylabel(prot, tolerance=0.5)
+            except Exception:  # noqa: BLE001
+                p = prot.representative_point()
+            franja = next((f" · FRANJA {1.5 * float(q['profundidad_m']):.2f} m" for q in ficha.get("quebradas") or []
+                           if q.get("profundidad_m")), "")
             texto(a_px(p.x, p.y), f"ZONA DE PROTECCIÓN DE QUEBRADA{franja}", 11.5, True, VERDE_TXT)
     if quebrada is not None:
         q = quebrada.interpolate(0.5, normalized=True)
@@ -619,8 +643,8 @@ def generar_tecnico(t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict
     filas = [(f"Lotes ({n})", st["area_util"]), ("Calle y redondel" if st.get("modo") == "calle_central" else "Calles",
                                                   st["area_circulacion"]),
              ("Área verde recreativa", st["area_verde"]),
-             ("Protección de quebrada y caídas fuertes" if len(lot.protecciones) > 1 else "Zona de protección de quebrada",
-              st.get("area_proteccion", 0)),
+             (("Protección de quebrada y caídas fuertes" if len(lot.protecciones) > 1 else "Zona de protección de quebrada")
+              if ficha.get("quebradas") else "Caídas fuertes sin lotes", st.get("area_proteccion", 0)),
              ("Equipamiento social", st.get("area_equipamiento", 0))]
     filas = [(a, b) for a, b in filas if b and b > 0.5]
     resto = total - sum(b for _, b in filas)
@@ -719,7 +743,8 @@ def generar_tecnico(t: Terreno, lot: Resultado, malla: Malla | None, ficha: dict
             d.ellipse([mx0 + 22, yc - 1, mx0 + 24, yc + 1], fill=(125, 138, 120))
 
     simb = [("terreno", "Lindero del terreno"), ("lote", "Lindero de lote (medidas en m)"), ("calle", "Calle"),
-                      ("verde", "Área verde recreativa"), ("proteccion", "Zona de protección de quebrada"),
+                      ("verde", "Área verde recreativa"),
+                      ("proteccion", "Zona de protección de quebrada" if ficha.get("quebradas") else "Caída fuerte sin lotes"),
                       ("curva", "Curvas de nivel (relieve satelital aproximado)"), ("casa", "Casa tipo y alberca (ilustrativas)"),
             ("arbol", "Árbol (ilustrativo)")]
     if unidos:

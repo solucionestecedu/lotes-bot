@@ -15,9 +15,11 @@ import unicodedata
 import uuid
 from dataclasses import dataclass, field
 
+from shapely.geometry import Polygon
+
 import config
 from motor import altimetria, colindancia, exportar, lamina, modelo3d, normas, presentacion, proyeccion, relieve
-from motor.calle_central import lindero_comun, lotificar_calle_central
+from motor.calle_central import es_angosto, lindero_comun, lotificar_calle_central, lotificar_un_lado
 from motor.lotificacion import (LADOS, ErrorLotificacion, Parametros, franja_de_proteccion, lotificar,
                                 punto_de_acceso)
 from motor.rumbos import M2_POR_V2, ErrorRumbo, leer_rumbo, poligonal
@@ -163,10 +165,16 @@ HERRAMIENTAS = [
          "sin_quebradas": {"type": "boolean", "description": "true si el usuario confirma que no colinda con quebradas ni ríos"},
          "figura": {"type": "string", "enum": ["lotificacion", "condominio", "proindiviso", "no_se"],
                     "description": "cómo se va a vender: lotes con permiso de lotificación, condominio, o en proindiviso"},
-         "distribucion": {"type": "string", "enum": ["automatica", "calle_central"],
+         "distribucion": {"type": "string", "enum": ["automatica", "calle_central", "un_lado"],
                           "description": "calle_central = una sola calle por el medio (si se unieron dos terrenos, sobre el "
                                          "lindero común) con lotes a los dos lados, retorno y área verde al fondo; para quintas "
-                                         "o pocos lotes, o cuando piden 'una calle en medio'"},
+                                         "o pocos lotes, o cuando piden 'una calle en medio'. un_lado = calle pegada a un "
+                                         "lindero largo desde la entrada y una sola fila de lotes del otro lado; para "
+                                         "terrenos angostos (franjas) o cuando piden 'de un solo lado' o 'una sola fila'"},
+         "calle_pegada_a": {"type": "string", "enum": ["norte", "noreste", "oriente", "sureste", "sur", "suroeste",
+                                                       "poniente", "noroeste"],
+                            "description": "con distribucion=un_lado: el lindero largo al que va pegada la calle, si el "
+                                           "usuario lo dice; si no, el motor prueba los dos y escoge"},
          "calle_sobre": {"type": "string", "enum": ["terreno_mas_grande", "terreno_mas_chico", "centro_del_lindero"],
                          "description": "con dos terrenos unidos y calle central: en qué terreno va la calle, pegada al "
                                         "lindero común (por defecto en el más grande)"},
@@ -195,10 +203,16 @@ HERRAMIENTAS = [
                          "description": "pct_util = % del área útil (defecto, 10 %); por_lote = m² por lote"},
          "valor_verde": {"type": "number"},
          "angulo": {"type": "number", "description": "orientación de calles en grados; omitir para automático"},
-         "distribucion": {"type": "string", "enum": ["automatica", "calle_central"],
+         "distribucion": {"type": "string", "enum": ["automatica", "calle_central", "un_lado"],
                           "description": "calle_central = una sola calle por el medio (si se unieron dos terrenos, sobre el "
                                          "lindero común) con lotes a los dos lados, retorno y área verde al fondo; para quintas "
-                                         "o pocos lotes, o cuando piden 'una calle en medio'"},
+                                         "o pocos lotes, o cuando piden 'una calle en medio'. un_lado = calle pegada a un "
+                                         "lindero largo desde la entrada y una sola fila de lotes del otro lado; para "
+                                         "terrenos angostos (franjas) o cuando piden 'de un solo lado' o 'una sola fila'"},
+         "calle_pegada_a": {"type": "string", "enum": ["norte", "noreste", "oriente", "sureste", "sur", "suroeste",
+                                                       "poniente", "noroeste"],
+                            "description": "con distribucion=un_lado: el lindero largo al que va pegada la calle, si el "
+                                           "usuario lo dice; si no, el motor prueba los dos y escoge"},
          "calle_sobre": {"type": "string", "enum": ["terreno_mas_grande", "terreno_mas_chico", "centro_del_lindero"],
                          "description": "con dos terrenos unidos y calle central: en qué terreno va la calle, pegada al "
                                         "lindero común (por defecto en el más grande)"},
@@ -305,6 +319,9 @@ FLUJO:
       de protección de 1.5 veces la profundidad de la quebrada.
    e) ¿Cerrado con portón o abierto? ¿Cómo se va a vender: lotificación con permiso o condominio? ¿Hay agua (ANDA o
       pozo) y luz?
+   Si el terreno es una franja angosta, o piden lotes "de un solo lado" o "en una sola fila" → distribucion=un_lado: la
+   calle va pegada a un lindero largo desde la entrada y los lotes quedan en una fila del otro lado (en franjas el motor
+   ya lo hace solo). Si dicen de qué lado va la calle o dónde está la entrada, guarda calle_pegada_a y acceso_lado.
    Si piden quintas, pocos lotes ("4 o 5 lotes por área") o "una calle en medio" → guarda distribucion=calle_central y
    lotes_por_lado=[mín, máx]; tipo campestre. Con dos terrenos unidos la calle va sobre el lindero común y cada lado es
    un terreno; por defecto la calle va completa dentro del terreno más grande, pegada al lindero (calle_sobre). No
@@ -717,7 +734,7 @@ class Agente:
 
     def h_guardar_ficha(self, s: Sesion, salidas=None, usar_sugerido=False, **datos) -> dict:
         campos = {"zona", "tipo", "lote_objetivo_m2", "frente_m", "acceso_lado", "cerrado", "quebradas", "sin_quebradas",
-                  "figura", "agua", "luz", "notas", "distribucion", "lotes_por_lado", "calle_sobre"}
+                  "figura", "agua", "luz", "notas", "distribucion", "lotes_por_lado", "calle_sobre", "calle_pegada_a"}
         if usar_sugerido and s.ficha.get("sugerido"):
             for k, v in s.ficha["sugerido"].get("ficha", {}).items():
                 if datos.get(k) is None and (k not in s.ficha or k == "sin_quebradas"):
@@ -725,7 +742,7 @@ class Agente:
             s.ficha["sugerido"]["confirmado"] = True
         for k, v in datos.items():
             if k in campos and v is not None:
-                if k in ("acceso_lado",) and str(v).lower() not in LADOS:
+                if k in ("acceso_lado", "calle_pegada_a") and str(v).lower() not in LADOS:
                     return {"ok": False, "error": f"lado no reconocido: {v}"}
                 if k == "lotes_por_lado":
                     try:
@@ -779,7 +796,7 @@ class Agente:
             prot.append({"tipo": q.get("tipo"), "lado": q.get("lado"), "profundidad": q.get("profundidad_m"),
                          "ancho": round(ancho, 2)})
         # caídas fuertes (barrancos, taludes de quebrada) según el relieve: no se lotifican
-        barr_m2 = 0.0
+        barr_m2, barr_zonas = 0.0, []
         m = s.get_malla()
         if m is not None and f.get("respetar_barrancos", True):
             try:
@@ -794,8 +811,9 @@ class Agente:
                 zona_b = unary_union(barr)
                 barr_m2 = (zona_b.difference(previo) if previo is not None else zona_b).area  # lo que no cubría la franja
                 excluir.extend(barr)
+                barr_zonas = list(barr)
         ficha_normas = {"zona": zona, "tipo": f.get("tipo"), "protecciones": prot, "cerrado": f.get("cerrado"),
-                        "barrancos_m2": barr_m2,
+                        "barrancos_m2": barr_m2, "barrancos_zonas": [b for b in excluir if any(b is x for x in barr_zonas)],
                         "figura": f.get("figura"),
                         "quebrada_sin_datos": (any(c.get("tipo") in ("quebrada", "rio") for c in f.get("del_plano", []))
                                                and not f.get("quebradas") and not f.get("sin_quebradas"))}
@@ -803,11 +821,27 @@ class Agente:
 
     def _modo(self, s: Sesion) -> tuple[str, list | None]:
         lp, f = s.lotes_param or {}, s.ficha
-        modo = lp.get("distribucion") or f.get("distribucion") or "automatica"
+        pedido = lp.get("distribucion") or f.get("distribucion")
+        modo = pedido or "automatica"
         rango = lp.get("lotes_por_lado") or f.get("lotes_por_lado")
-        if rango and modo == "automatica" and not lp.get("distribucion") and not f.get("distribucion"):
+        if rango and modo == "automatica" and not pedido:
             modo = "calle_central"  # pedir N lotes por lado ya implica la calle al centro
+        if not pedido and not rango and len(s.partes) <= 1:
+            t = s.get_terreno()
+            if t is not None and es_angosto(Polygon(t.puntos).buffer(0)):
+                modo = "un_lado"  # en una franja no caben lotes a los dos lados: una fila con la calle pegada al lindero
         return modo, rango
+
+    @staticmethod
+    def _falta_equipamiento(r, P: Parametros, fn: dict) -> bool:
+        """Si la norma pide equipamiento social y no se dejó, lo pone en P (para rehacer) y dice True."""
+        if not fn.get("zona"):
+            return False
+        req, _, claro = normas.equipamiento_requerido(fn["zona"], r.stats["lotes"], fn.get("tipo") or "residencial")
+        if claro and r.stats.get("area_equipamiento", 0.0) < req - 0.5:
+            P.equipamiento_m2 = req
+            return True
+        return False
 
     def _lotificar(self, s: Sesion):
         """Prediseño + revisión de normas. Si la norma pide equipamiento social, se reserva y se rehace."""
@@ -815,6 +849,27 @@ class Agente:
         m = s.get_malla()
         P, excluir, fn = self._parametros(s)
         modo, rango = self._modo(s)
+        if modo == "un_lado":
+            barr = fn.get("barrancos_zonas") or []
+            legales = [e for e in excluir if not any(e is b for b in barr)]
+            if m is not None and s.ficha.get("respetar_barrancos", True):
+                try:  # en una fila la calle cruza las caídas fuertes: también cuentan las que van de lado a lado
+                    barr = altimetria.barrancos(m, t.puntos, partir=True)
+                except Exception:  # noqa: BLE001
+                    log.exception("barrancos")
+                if barr:
+                    from shapely.ops import unary_union
+
+                    zona_b = unary_union(barr)
+                    fn["barrancos_m2"] = (zona_b.difference(unary_union(legales)) if legales else zona_b).area
+            borde = (s.lotes_param or {}).get("calle_pegada_a") or s.ficha.get("calle_pegada_a")
+            r = lotificar_un_lado(t.puntos, P, m, legales, borde=borde, lotes=rango, cruzables=barr)
+            if self._falta_equipamiento(r, P, fn):
+                r = lotificar_un_lado(t.puntos, P, m, legales, borde=borde, lotes=rango, cruzables=barr)
+            altimetria.enriquecer(r, m)
+            filas = normas.revisar(r, t, m, fn)
+            s.cumplimiento = filas
+            return r, filas
         if modo == "calle_central":
             cx, cy = t.centroide()
             eje = [(x + cx, y + cy) for x, y in s.lindero] if s.lindero else None
@@ -823,6 +878,9 @@ class Agente:
             sobre = {"terreno_mas_grande": "mayor", "terreno_mas_chico": "menor"}.get(sobre, "lindero")
             r = lotificar_calle_central(t.puntos, P, m, excluir, eje=eje, lotes_por_lado=rango or (4, 5), partes=partes,
                                         calle_sobre=sobre)
+            if self._falta_equipamiento(r, P, fn):
+                r = lotificar_calle_central(t.puntos, P, m, excluir, eje=eje, lotes_por_lado=rango or (4, 5),
+                                            partes=partes, calle_sobre=sobre)
             altimetria.enriquecer(r, m)
             filas = normas.revisar(r, t, m, fn)
             s.cumplimiento = filas
@@ -1012,7 +1070,8 @@ class Agente:
         if t is None:
             return {"ok": False, "error": "primero hay que cargar el terreno"}
         validos = {k: v for k, v in params.items()
-                   if (k in Parametros.__dataclass_fields__ or k in ("distribucion", "lotes_por_lado", "calle_sobre"))
+                   if (k in Parametros.__dataclass_fields__
+                       or k in ("distribucion", "lotes_por_lado", "calle_sobre", "calle_pegada_a"))
                    and v is not None}
         base = dict(s.lotes_param or {})
         base.update(validos)
@@ -1040,7 +1099,12 @@ class Agente:
                "resumen_cumplimiento": normas.resumen(filas),
                "supuestos": self._faltantes(s)}
         if st.get("modo") == "calle_central":
-            out["distribucion"] = "calle_central"
+            out["distribucion"] = "un_lado" if st.get("un_lado") else "calle_central"
+            if st.get("un_lado"):
+                out["calle_pegada_a"] = st.get("calle_pegada_a")
+                out["nota_un_lado"] = ("una sola fila de lotes; la calle va pegada al lindero " +
+                                       str(st.get("calle_pegada_a")) + " desde la entrada; si la entrada o la calle van "
+                                       "del otro lado, se puede cambiar con calle_pegada_a")
             out["por_lado"] = st["por_lado"]
             out["retorno_diametro_m"] = _r(st["retorno_diametro_m"], 1)
             if st.get("calle_dentro_de"):
@@ -1077,8 +1141,14 @@ class Agente:
                 hoy = {"frente": P0.frente, "fondo": P0.fondo, "area_minima": P0.area_minima}
             except Exception:  # noqa: BLE001
                 hoy = None
+            from motor.calle_central import bordes_largos
+
+            poly = Polygon(t.puntos).buffer(0)
+            una = len(s.partes) <= 1
             for v in disenador.variantes(s.lotes_param or {}, s.ficha, len(s.partes) > 1 and bool(s.lindero), modo, rango,
-                                         medidas=hoy):
+                                         medidas=hoy, angosto=una and es_angosto(poly),
+                                         bordes=bordes_largos(poly) if una else None,
+                                         borde_actual=(s.lotes_stats or {}).get("calle_pegada_a")):
                 s.lotes_param = v["param"]
                 try:
                     r, filas = self._lotificar(s)
@@ -1157,8 +1227,6 @@ class Agente:
                               imagenes=[(p["ruta"], p["titulo"]) for p in presentacion_ if p["vista"] == "planta"])
         cs = None
         if m is not None:
-            from shapely.geometry import Polygon
-
             cs = relieve.curvas(m, info["intervalo_curvas"], recorte=Polygon(t.puntos).buffer(20))
         archivos = [(pdf, "Lámina en PDF (imprimir en tabloide al 100 %)")]
         if t.ubicado:

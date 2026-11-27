@@ -97,7 +97,7 @@ def cuadro_areas(t: Terreno, lot: Resultado, partes: list | None) -> dict:
     prop = Polygon(t.puntos).buffer(0)
     piezas = [(p["origen"], Polygon(p["anillo"]).buffer(0)) for p in (partes or [])] or [("Terreno", prop)]
     usos = [("Lotes", [l["poly"] for l in lot.lotes]), ("Calle y redondel", lot.calles),
-            ("Protección (quebrada y caídas fuertes)", lot.protecciones),
+            ("Sin lotes (protección y caídas fuertes)", lot.protecciones),
             ("Área verde recreativa", [v["poly"] for v in lot.verdes]),
             ("Equipamiento social", [e["poly"] for e in lot.equipamiento])]
     filas = []
@@ -416,10 +416,12 @@ def generar_resumen(ruta: str, t: Terreno, lot: Resultado, malla, ficha: dict | 
     pasos = []
     if avisos:
         pasos.append("Pedir al topógrafo que revise el cuadro de rumbos que no cuadra (arriba, en la verificación).")
+    hay_quebrada = bool(ficha.get("quebradas"))
     pasos += ["Levantamiento topográfico con altimetría (curvas cada 1 m) para sustituir el relieve satelital y marcar "
-              "el borde real de la quebrada y de las caídas fuertes.",
-              "Medir la profundidad real de la quebrada: de ella sale el ancho de la franja de protección.",
-              "Factibilidades de agua potable, aguas negras y energía eléctrica.",
+              "el borde real " + ("de la quebrada y " if hay_quebrada else "") + "de las caídas fuertes."]
+    if hay_quebrada:
+        pasos.append("Medir la profundidad real de la quebrada: de ella sale el ancho de la franja de protección.")
+    pasos += ["Factibilidades de agua potable, aguas negras y energía eléctrica.",
               "Calificación de lugar, línea de construcción y permiso de parcelación en la oficina que corresponda.",
               "Definir con el notario la figura legal (arriba) y el reglamento de la lotificación."]
     for i, x in enumerate(pasos, 1):

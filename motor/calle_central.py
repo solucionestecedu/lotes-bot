@@ -16,6 +16,115 @@ from .lotificacion import (LADOS, ErrorLotificacion, Parametros, Resultado, _may
                            punto_de_acceso)
 from .relieve import Malla
 
+LADOS_8 = ["norte", "noreste", "oriente", "sureste", "sur", "suroeste", "poniente", "noroeste"]
+
+
+def _lado_de_azimut(az: float) -> str:
+    return LADOS_8[int(((az % 360) + 22.5) // 45) % 8]
+
+
+def bordes_largos(terreno: Polygon) -> list[str]:
+    """Hacia dónde miran los dos linderos largos del terreno (en una franja de oriente a poniente: norte y sur)."""
+    c = list(terreno.minimum_rotated_rectangle.exterior.coords)
+    l1, l2 = math.dist(c[0], c[1]), math.dist(c[1], c[2])
+    a, b = (c[0], c[1]) if l1 >= l2 else (c[1], c[2])
+    az = math.degrees(math.atan2(b[0] - a[0], b[1] - a[1]))  # azimut del lado largo
+    return [_lado_de_azimut(az - 90), _lado_de_azimut(az + 90)]
+
+
+def es_angosto(terreno: Polygon, ancho_max: float = 60.0) -> bool:
+    """Franja: tan angosta que no caben lotes a los dos lados de una calle (ancho típico < `ancho_max` m)."""
+    c = list(terreno.minimum_rotated_rectangle.exterior.coords)
+    l1, l2 = math.dist(c[0], c[1]), math.dist(c[1], c[2])
+    largo = max(l1, l2)
+    return largo > 0 and terreno.area / largo < ancho_max and largo >= 3 * terreno.area / largo
+
+
+def eje_de_borde(terreno: Polygon, lado: str, ancho_calle: float) -> list[tuple[float, float]] | None:
+    """Eje de una calle pegada al lindero que mira hacia `lado`: la cadena más larga de tramos seguidos que miran hacia
+    allá (sin doblar las esquinas del terreno), corrida media calle hacia adentro."""
+    from shapely.geometry.polygon import orient
+
+    objetivo = LADOS[lado]
+    pts = list(orient(terreno, 1.0).exterior.coords)
+    tramos = [(a, b) for a, b in zip(pts, pts[1:]) if math.dist(a, b) >= 0.05]
+    if not tramos:
+        return None
+
+    def mira(a, b):
+        az = math.degrees(math.atan2(b[1] - a[1], -(b[0] - a[0]))) % 360
+        return abs((az - objetivo + 180) % 360 - 180) <= 50
+
+    ok = [mira(a, b) for a, b in tramos]
+    if not any(ok):
+        return None
+    n = len(tramos)
+    inicio = next((i for i in range(n) if not ok[i]), None)  # arrancar después de un tramo que no mira
+    corridas, actual = [], []
+    for k in range(n):
+        i = (k + (inicio + 1 if inicio is not None else 0)) % n
+        if ok[i]:
+            actual.append(tramos[i])
+        elif actual:
+            corridas.append(actual)
+            actual = []
+    if actual:
+        corridas.append(actual)
+    cadena = max(corridas, key=lambda c: sum(math.dist(a, b) for a, b in c))
+    orilla = LineString([cadena[0][0]] + [b for _, b in cadena])
+    if orilla.length < 2 * ancho_calle:
+        return None
+    for d in (ancho_calle / 2, -ancho_calle / 2):
+        e = orilla.offset_curve(d, join_style=2, mitre_limit=3.0)
+        if e.geom_type == "MultiLineString":
+            e = max(e.geoms, key=lambda g: g.length)
+        if e.geom_type == "LineString" and e.length > 1 and terreno.contains(e.interpolate(0.5, normalized=True)):
+            return [tuple(c) for c in e.coords]
+    return None
+
+
+def lotificar_un_lado(anillo, P: Parametros | None = None, malla: Malla | None = None, excluir: list | None = None,
+                      borde: str | None = None, lotes: tuple | list | None = None,
+                      radio_retorno: float | None = None, cruzables: list | None = None) -> Resultado:
+    """Lotes de un solo lado: la calle va pegada a un lindero largo desde la entrada y los lotes quedan en una sola
+    fila del otro lado. Para franjas angostas o cuando lo piden. Sin `borde` se prueban los dos linderos largos y gana
+    el que deja más lotes y más área vendible; `lotes` = [mínimo, máximo] de lotes (sin él, los que quepan con el área
+    mínima). `cruzables`: caídas fuertes que la calle puede cruzar para llegar a la entrada, pero sin lotes."""
+    P = P or Parametros()
+    terreno = Polygon(anillo).buffer(0)
+    if not isinstance(terreno, Polygon):
+        terreno = _mayor(terreno)
+    c = list(terreno.minimum_rotated_rectangle.exterior.coords)
+    largo = max(math.dist(c[0], c[1]), math.dist(c[1], c[2]))
+    candidatos = [borde.strip().lower()] if borde else bordes_largos(terreno)
+    mejor, error = None, None
+    for lado in candidatos:
+        if lado not in LADOS:
+            continue
+        eje = eje_de_borde(terreno, lado, P.calle)
+        if eje is None:
+            error = ErrorLotificacion(f"No hay un lindero largo hacia el {lado} para pegar la calle.")
+            continue
+        if lotes:
+            rango = lotes
+        else:
+            libre = max(terreno.area - P.calle * largo, P.area_minima)
+            rango = (1, max(1, min(40, int(libre / max(P.area_minima, 1.0)))))
+        try:
+            r = _calle_central(anillo, P, malla, excluir, eje, rango, None, radio_retorno, "lindero", True,
+                               un_lado=True, cruzables=cruzables)
+        except ErrorLotificacion as ex:
+            error = ex
+            continue
+        r.stats["calle_pegada_a"] = lado
+        r.parametros["calle_pegada_a"] = lado
+        clave = (r.stats["lotes"], r.stats["area_util"])
+        if mejor is None or clave > mejor[0]:
+            mejor = (clave, r)
+    if mejor is None:
+        raise error or ErrorLotificacion("No cupo la calle pegada al lindero en este terreno.")
+    return mejor[1]
+
 
 def lindero_comun(a_anillo, b_anillo) -> list[tuple[float, float]] | None:
     """Línea que comparten dos terrenos ya alineados (de punta a punta)."""
@@ -160,7 +269,7 @@ def _equilibrar_lado(lotes: list, y_eje, calle_b, frente_min: float, area_min: f
 
 
 def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio_retorno, calle_sobre="lindero",
-                   equilibrar: bool = True) -> Resultado:
+                   equilibrar: bool = True, un_lado: bool = False, cruzables: list | None = None) -> Resultado:
     P = P or Parametros()
     W = P.calle
     nmin, nmax = sorted(int(x) for x in (list(lotes_por_lado) * 2)[:2])
@@ -183,6 +292,12 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
         raise ErrorLotificacion("El terreno es más chico que un lote.")
     area_total = terreno_total.area
     area_prot = sum(p.area for p in protecciones)
+    # zonas que la calle sí puede cruzar pero donde no van lotes (caídas fuertes del relieve en una franja: la calle
+    # tiene que pasar para llegar a la entrada)
+    cruz = None
+    if cruzables:
+        cruz = unary_union([c for c in cruzables if c is not None and not c.is_empty]).intersection(Z)
+        cruz = None if cruz.is_empty else cruz
 
     # ---- eje: se ordena para que empiece en el lado de la calle pública
     pts = [tuple(p) for p in eje]
@@ -236,6 +351,7 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
         return affinity.rotate(g, deg, origin=C)
 
     Zr, Tr = rot(Z), rot(terreno_total)
+    cruz_r = rot(cruz) if cruz is not None else None
     # con la calle dentro de un solo terreno, el redondel también se corre hacia ese terreno
     corrimiento = 0.0
     if dentro_de is not None:
@@ -267,6 +383,9 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
 
     if dentro_de is not None:
         corrimiento = max(0.0, r_ret - W / 2) * (1 if c_dest.y > y_eje(c_dest.x) else -1)
+    elif un_lado:  # calle pegada al lindero: el redondel se corre hacia los lotes para caber completo
+        c_t = Zr.representative_point()
+        corrimiento = max(0.0, r_ret - W / 2) * (1 if c_t.y > y_eje(c_t.x) else -1)
 
     def calle_hasta(x_r):
         """Calle del acceso hasta x_r con un redondel de retorno centrado ahí."""
@@ -275,7 +394,13 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
         redondel = Point(x_r, y_eje(x_r) + corrimiento).buffer(r_ret, quad_segs=12)
         return _mayor(unary_union([tira, redondel]).intersection(Zr))
 
+    if cruz_r is not None:  # lo que la calle no ocupa de las caídas fuertes cuenta como área verde ecológica
+        tira = LineString([(x_ini - 2, y_eje(x_ini))] + [c for c in xs_l if c[0] > x_ini]).buffer(W / 2, cap_style=2)
+        area_prot += cruz_r.difference(tira).area
+
     cache_r: dict = {}
+    # pegado al lindero, el redondel queda tangente: se le perdona un borde mínimo que cae fuera (se recorta)
+    tolerancia_r = 0.03 * math.pi * r_ret ** 2 if un_lado else 0.5
 
     def x_redondel(x_r):
         """Corre el redondel hacia la entrada hasta que quepa completo (sin morder la franja de protección, una caída
@@ -285,7 +410,7 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
             x = x_r
             while x > x_ini + r_ret:
                 circulo = Point(x, y_eje(x) + corrimiento).buffer(r_ret, quad_segs=12)
-                if circulo.difference(Zr).area < 0.5:
+                if circulo.difference(Zr).area < tolerancia_r:
                     break
                 x -= 0.5
             cache_r[clave] = max(x, x_ini + r_ret)
@@ -297,17 +422,22 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
         x_corte = x_corte - (ideal - x_r)  # si el redondel se recorre, los lotes terminan antes de él
         calle = calle_hasta(x_r)
         libre = Zr.difference(calle.buffer(0.01))
+        if cruz_r is not None:
+            libre = libre.difference(cruz_r)
         zona_lotes = libre.intersection(box(Tr.bounds[0] - 5, Tr.bounds[1] - 5, x_corte, Tr.bounds[3] + 5))
         zona_verde = libre.difference(box(Tr.bounds[0] - 5, Tr.bounds[1] - 5, x_corte, Tr.bounds[3] + 5))
         return calle, zona_lotes, zona_verde
 
+    equip_m2 = max(0.0, float(P.equipamiento_m2 or 0.0))
+
     def meta_verde(n_lotes, util):
+        """Lo que hay que dejar junto al retorno: el área verde que falta y el terreno del equipamiento social."""
         req = area_verde_requerida(P.regla_verde, P.valor_verde, n_lotes, util, area_total)
-        return 0.0 if req <= 0 else max(req - area_prot, req * P.pct_recreativa / 100)
+        return (0.0 if req <= 0 else max(req - area_prot, req * P.pct_recreativa / 100)) + equip_m2
 
     # ---- dónde terminan los lotes: lo más al fondo posible dejando el área verde que pide la norma,
     # y que esa área verde dé a la calle (si no, nadie puede entrar al parque)
-    n_est = 2 * nmax
+    n_est = nmax if un_lado else 2 * nmax
 
     def suficiente(x):
         calle_, zl, zv = armar(x)
@@ -321,6 +451,13 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
     lo, hi = x_ini + 10, x_fin
     if suficiente(hi):
         x_corte = hi
+    elif un_lado:  # en una franja larga la prueba no es pareja: se recorre desde el fondo hacia la entrada
+        x_corte, x = lo, hi
+        while x > lo:
+            x -= 2.0
+            if suficiente(x):
+                x_corte = x
+                break
     else:
         for _ in range(40):
             mid = (lo + hi) / 2
@@ -341,6 +478,9 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
         clave = "izquierda" if c.y >= y_eje(c.x) else "derecha"
         if pieza.boundary.intersection(calle_b).length < frente_min or pieza.area < P.area_minima:
             (verdes if pieza.area >= P.verde_minimo else remanentes).append(pieza)
+            continue
+        if un_lado:  # una sola fila: cada tramo entre caídas fuertes lleva sus propios lotes
+            lados[f"{clave}#{len(lados)}"] = pieza
             continue
         if clave not in lados or pieza.area > lados[clave].area:
             if clave in lados:
@@ -408,10 +548,12 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
         return mejor
 
     por_lado, lotes_out = [], []
-    for clave in ("izquierda", "derecha"):
-        pieza = lados.get(clave)
-        if pieza is None:
-            continue
+    if un_lado:  # desde la entrada hacia el fondo
+        orden = sorted(lados.items(), key=lambda kv: kv[1].bounds[0])
+    else:
+        orden = [(k, lados[k]) for k in ("izquierda", "derecha") if k in lados]
+    for clave_l, pieza in orden:
+        clave = clave_l.split("#")[0]
         origen = None
         if partes_r:
             origen = max(partes_r, key=lambda pr: pr[1].intersection(pieza).area)[0]
@@ -440,6 +582,8 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
                 if min(l.area for l in o["lotes"]) < P.area_minima:
                     motivo.append(f"un lote quedaría de {min(l.area for l in o['lotes']):.0f} m² (mínimo {P.area_minima:.0f} m²)")
                 nota = f"con {nmax} no cabe: " + " y ".join(motivo) if motivo else nota
+        if un_lado and elegido["n"] >= nmin:
+            nota = None  # en una fila el máximo es un tope, no lo que pidieron
         for s_ in elegido["sobras"]:
             (verdes if s_.area >= P.verde_minimo else remanentes).append(s_)
         ids = []
@@ -519,6 +663,28 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
                     (verdes if g.area >= P.verde_minimo else remanentes).append(g)
         for l in lotes_out:
             l["area"] = l["poly"].area
+    # ---- equipamiento social: del área que queda junto al retorno, la parte más cercana a él (con entrada)
+    equip = []
+    if equip_m2 > 0 and verdes:
+        con_calle = [v for v in verdes if v.boundary.intersection(calle_b).length >= 1.0] or list(verdes)
+        v = min(con_calle, key=lambda g: g.distance(centro_ret))
+        if v.area > equip_m2 + 1.0:
+            lo_r, hi_r = 0.0, 400.0
+            for _ in range(40):
+                m_ = (lo_r + hi_r) / 2
+                if v.intersection(centro_ret.buffer(m_, quad_segs=24)).area < equip_m2:
+                    lo_r = m_
+                else:
+                    hi_r = m_
+            e_ = _mayor(v.intersection(centro_ret.buffer(hi_r, quad_segs=24)))
+            resto = [g for g in _poligonos(v.difference(e_)) if g.area > 1.0] if e_ is not None else [v]
+        else:
+            e_, resto = v, []
+        if e_ is not None:
+            verdes.remove(v)
+            equip.append(e_)
+            for g in resto:
+                (verdes if g.area >= P.verde_minimo else remanentes).append(g)
     # ---- reparto parejo: la tierra que recibió el lote del fondo (detrás del área verde) se reparte entre los lotes
     # de su lado girando los cortes; el frente de cada lote a la calle no cambia
     if equilibrar:
@@ -566,6 +732,9 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
     area_verde = sum(v.area for v in verdes)
     areas = [l["area"] for l in salida]
     req = area_verde_requerida(P.regla_verde, P.valor_verde, len(salida), area_util, area_total)
+    if cruz is not None:  # lo que la calle no ocupa de las caídas fuertes queda como zona sin lotes
+        protecciones = protecciones + [g for g in _poligonos(cruz.difference(desrot(calle))) if g.area >= 1.0]
+        area_prot = sum(p.area for p in protecciones)
     return Resultado(
         angulo=round(deg % 180, 1),
         lotes=salida,
@@ -578,18 +747,21 @@ def _calle_central(anillo, P, malla, excluir, eje, lotes_por_lado, partes, radio
             "lotes": len(salida), "lotes_convertidos_a_verde": 0,
             "largo_calles": eje_calle.length + r_ret, "lote_promedio": area_util / len(salida),
             "lote_min": min(areas), "lote_max": max(areas), "pendiente_calles_pct": pend_calle * 100,
-            "area_proteccion": area_prot, "area_equipamiento": 0.0,
+            "area_proteccion": area_prot, "area_equipamiento": sum(e.area for e in equip),
             "calles_sin_salida": True, "calles_desconectadas": 0, "accesos": 1,
             "lotes_de_area_sobrante": 0, "area_sobrante_sumada_a_lotes": sumado,
             "lotes_recortados_para_verde": 0, "lotes_partidos": 0,
             "modo": "calle_central", "retorno_diametro_m": 2 * r_ret, "por_lado": por_lado,
-            "calle_dentro_de": dentro_de,
+            "calle_dentro_de": dentro_de, "un_lado": un_lado,
             "entrada_calle": [round(c, 3) for c in desrot(Point(x_ini, y_eje(x_ini))).coords[0]],
+            # boca de la calle: su sección en la entrada (pegada al lindero, todo su costado toca el lindero y no sirve)
+            "boca_calle": [[round(c, 3) for c in desrot(Point(x_ini, y_eje(x_ini) + k * W / 2)).coords[0]]
+                           for k in (-1, 1)],
             "retorno_centro": [round(c, 3) for c in desrot(centro_ret).coords[0]],
         },
         parametros={"calle": W, "frente_minimo": round(frente_min, 1), "area_minima": P.area_minima,
                     "regla_verde": P.regla_verde, "valor_verde": P.valor_verde, "modo": "calle_central",
-                    "lotes_por_lado": [nmin, nmax]},
+                    "lotes_por_lado": [nmin, nmax], "un_lado": un_lado},
         protecciones=protecciones,
-        equipamiento=[],
+        equipamiento=[{"poly": desrot(e), "area": e.area} for e in equip],
     )

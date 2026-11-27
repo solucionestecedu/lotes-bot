@@ -94,8 +94,11 @@ def test_flujo_completo(tmp_path, malla_local):
     out = ag.atender(s, "saca el relieve")
     assert '"desnivel": 138.' in out[0]["texto"]
     out = ag.atender(s, "prediseña los lotes")
-    n_lotes = json.loads(out[0]["texto"][len("RESULTADO "):])["lotes"]
-    assert 26 <= n_lotes <= 36
+    pre = json.loads(out[0]["texto"][len("RESULTADO "):])
+    # Chiltiupán es una franja angosta: por defecto una sola fila de lotes con la calle pegada a un lindero largo
+    assert pre["distribucion"] == "un_lado" and pre["calle_pegada_a"] in ("norte", "sur")
+    n_lotes = pre["lotes"]
+    assert 30 <= n_lotes <= 45
     out = ag.atender(s, "mándame la lámina")
     archivos = [o for o in out if o["tipo"] == "archivo"]
     # primero la carpeta de prefactibilidad (un PDF con todo), después las vistas y los archivos de CAD

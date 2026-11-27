@@ -75,6 +75,11 @@ class Dibujo:
     extra: dict = field(default_factory=dict)    # anclas para letreros
 
 
+def _unir_lineas(g):
+    """linemerge que acepta una sola línea (un lado con un solo tramo de lindero)."""
+    return g if g.geom_type == "LineString" else linemerge(g)
+
+
 def _fuente(tam: int, negrita: bool = False) -> ImageFont.FreeTypeFont:
     from matplotlib import font_manager
 
@@ -207,7 +212,7 @@ def calco_planta(t: Terreno, lot: Resultado, malla: Malla | None = None, ficha: 
                         cambio = True
             bordes = sel or bordes
         if bordes:
-            via = linemerge(unary_union(bordes)).buffer(8.0, cap_style=2, join_style=1)
+            via = _unir_lineas(unary_union(bordes)).buffer(8.0, cap_style=2, join_style=1)
             via = via.difference(prop.buffer(0.6)).intersection(dibujo_geo)
             poli(via, fill=P["acceso"])
             extra["acceso"] = max(_poligonos(via), key=lambda g: g.area, default=None)
@@ -219,7 +224,7 @@ def calco_planta(t: Terreno, lot: Resultado, malla: Malla | None = None, ficha: 
     if lot.protecciones and lado_q:
         bordes = _bordes_hacia(prop, lado_q, tolerancia=50)
         if bordes:
-            orilla = linemerge(unary_union([LineString(b) for b in bordes]))
+            orilla = _unir_lineas(unary_union([LineString(b) for b in bordes]))
             monte = orilla.buffer(12).difference(prop.buffer(0.4)).intersection(dibujo_geo)
             poli(monte, fill=P["proteccion"])
             for p in _puntos_dentro(monte, int(monte.area / (90 if tec else 40)), rng, 5.0 if tec else 3.5):
@@ -339,7 +344,9 @@ def calco_planta(t: Terreno, lot: Resultado, malla: Malla | None = None, ficha: 
         tramos = [g for g in getattr(boca, "geoms", [boca]) if g.geom_type == "LineString" and g.length > 1]
     if tramos:  # la boca de la calle: la que da al acceso (no la del retorno, que también puede tocar el lindero)
         ent = lot.stats.get("entrada_calle")
-        if ent:
+        if lot.stats.get("un_lado") and lot.stats.get("boca_calle"):
+            boca = LineString(lot.stats["boca_calle"])
+        elif ent:
             boca = min(tramos, key=lambda g: g.distance(Point(ent)))
         elif extra.get("acceso") is not None:
             boca = min(tramos, key=lambda g: g.distance(extra["acceso"]))
@@ -956,7 +963,7 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
         ancho_c = lot.parametros.get("calle", 8)
         boca = dib.extra.get("boca")
         eje_ang = lot.angulo
-        nombre_c = "CALLE CENTRAL" if st.get("modo") == "calle_central" else "CALLE"
+        nombre_c = "CALLE CENTRAL" if st.get("modo") == "calle_central" and not st.get("un_lado") else "CALLE"
         tam_c = max(13, min(30, m * 2.6))
         if boca is not None and st.get("modo") == "calle_central" and calle.geom_type == "Polygon":
             ret = st.get("retorno_centro")
@@ -1011,8 +1018,8 @@ def rotular_planta(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, p
             x, y = dib.a_px(p.x, p.y)
             _texto(d, (x, y), f"ÁREA VERDE\nRECREATIVA\n{_fmt(st['area_verde'])} m²", max(11, min(26, m * 2.2)), True,
                    color=(28, 80, 28), ocupado=ocupado)
-    if lot.protecciones:
-        prot = proteccion_de_quebrada(lot.protecciones, _anillo_de(lot), ficha)
+    prot = proteccion_de_quebrada(lot.protecciones, _anillo_de(lot), ficha) if lot.protecciones else None
+    if prot is not None:
         try:
             p = polylabel(prot, tolerance=0.5)
         except Exception:  # noqa: BLE001
@@ -1160,8 +1167,8 @@ def rotular_aerea(img: Image.Image, dib: Dibujo, lot: Resultado, ficha: dict, pr
         d.rounded_rectangle([x - tw / 2 - 8, y - tam * 0.75, x + tw / 2 + 8, y + tam * 0.75], radius=tam * 0.5,
                             fill=(255, 255, 255, 225), outline=(90, 70, 50), width=2)
         d.text((x, y), txt, font=f, fill=(30, 30, 30), anchor="mm")
-    if lot.protecciones:
-        prot = proteccion_de_quebrada(lot.protecciones, _anillo_de(lot), ficha)
+    prot = proteccion_de_quebrada(lot.protecciones, _anillo_de(lot), ficha) if lot.protecciones else None
+    if prot is not None:
         p = prot.representative_point()
         x, y = dib.a_px(p.x, p.y, alt(p.x, p.y) + 4)
         if 0 <= x < W and 0 <= y < H:

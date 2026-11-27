@@ -496,7 +496,7 @@ def generar(ruta: str, t: Terreno, malla: Malla | None = None, lot: Resultado | 
                 if not any(v["de_lote"] for v in lot.verdes):
                     items = [it for it in items if not it[0].startswith("Área verde tomada")]
                 if lot.protecciones:
-                    items.insert(4, ("Área verde ecológica: zona de protección de quebrada", dict(fc=COLOR_PROTECCION, ec="#3d6b2e", lw=0.4, hatch="////")))
+                    items.insert(4, ("Área verde ecológica: protección y caídas fuertes", dict(fc=COLOR_PROTECCION, ec="#3d6b2e", lw=0.4, hatch="////")))
                 if lot.equipamiento:
                     items.insert(4, ("Equipamiento social (EQ)", dict(fc=COLOR_EQUIP, ec="#3e6d99", lw=0.45)))
                 if cs:
@@ -524,7 +524,11 @@ def generar(ruta: str, t: Terreno, malla: Malla | None = None, lot: Resultado | 
                      "pct_total": f"{lot.parametros['valor_verde']:g} % del área total",
                      "por_lote": f"{lot.parametros['valor_verde']:g} m² por lote"}[lot.parametros["regla_verde"]]
             pm = lot.parametros
-            if pm.get("modo") == "calle_central":
+            if pm.get("un_lado"):
+                linea_lote = (f"Calle de {pm['calle']:g} m pegada al lindero {pm.get('calle_pegada_a', '')} con retorno de "
+                              f"{s.get('retorno_diametro_m', 0):.0f} m · una sola fila de {s['lotes']} lotes · frente mínimo "
+                              f"{pm['frente_minimo']:g} m · área mínima {pm['area_minima']:g} m².")
+            elif pm.get("modo") == "calle_central":
                 lados = " · ".join(f"{pl.get('terreno') or pl['lado']}: {pl['lotes']} lotes" for pl in s.get("por_lado", []))
                 linea_lote = (f"Calle central de {pm['calle']:g} m con retorno de {s.get('retorno_diametro_m', 0):.0f} m · "
                               f"{lados} · frente mínimo {pm['frente_minimo']:g} m · área mínima {pm['area_minima']:g} m².")

@@ -18,9 +18,12 @@ log = logging.getLogger(__name__)
 
 
 def variantes(lotes_param: dict, ficha: dict, dos_terrenos: bool, modo: str, rango,
-              medidas: dict | None = None) -> list[dict]:
+              medidas: dict | None = None, angosto: bool = False, bordes: list | None = None,
+              borde_actual: str | None = None) -> list[dict]:
     """Las variantes a medir: la actual y cambios de una sola palanca, sin repetir. Cada una es {id, cambio, param}.
-    `medidas` = frente, fondo y área mínima con que se diseña hoy (de la ficha): los cambios de tamaño parten de ahí."""
+    `medidas` = frente, fondo y área mínima con que se diseña hoy (de la ficha): los cambios de tamaño parten de ahí.
+    `angosto`: el terreno es una franja (se ofrece una sola fila de lotes); `bordes`: sus dos linderos largos;
+    `borde_actual`: al que va pegada la calle hoy (en una sola fila)."""
     base = dict(lotes_param or {})
     hoy = {**(medidas or {}), **{k: v for k, v in base.items() if k in ("frente", "fondo", "area_minima") and v}}
     out = [{"id": "A", "cambio": "el prediseño actual", "param": base}]
@@ -34,7 +37,20 @@ def variantes(lotes_param: dict, ficha: dict, dos_terrenos: bool, modo: str, ran
         vistos.add(clave)
         out.append({"id": chr(ord("A") + len(out)), "cambio": cambio, "param": p})
 
-    if modo == "calle_central":
+    if modo == "un_lado":
+        actual = base.get("calle_pegada_a") or ficha.get("calle_pegada_a") or borde_actual
+        for b_ in bordes or []:
+            if b_ != actual:
+                agregar(f"la calle pegada al lindero {b_} (la entrada de ese lado)", calle_pegada_a=b_)
+        am = float(hoy.get("area_minima") or 540)
+        agregar(f"lotes más grandes (~{am * 1.25 / 0.9:,.0f} m²)", area_minima=round(am * 1.25),
+                frente=round(float(hoy.get("frente") or 15) * 1.12, 1))
+        agregar(f"lotes más chicos (~{am * 0.8 / 0.9:,.0f} m²)", area_minima=round(am * 0.8),
+                frente=round(float(hoy.get("frente") or 15) * 0.9, 1))
+        if not angosto:
+            agregar("una sola calle central con lotes a los dos lados", distribucion="calle_central")
+        agregar("retícula de calles en lugar de una sola fila", distribucion="automatica")
+    elif modo == "calle_central":
         a, b = (list(rango) + [None, None])[:2] if rango else (4, 5)
         b = b or a
         if a > 2:
@@ -57,6 +73,8 @@ def variantes(lotes_param: dict, ficha: dict, dos_terrenos: bool, modo: str, ran
                 area_minima=round(am * 1.25))
         agregar(f"lotes más chicos (~{am * 0.8 / 0.9:,.0f} m²)", frente=round(fr * 0.9, 1), fondo=round(fo * 0.9, 1),
                 area_minima=round(am * 0.8))
+        if angosto:
+            agregar("lotes de un solo lado, con la calle pegada al lindero", distribucion="un_lado")
         agregar("una sola calle central con lotes a los dos lados", distribucion="calle_central")
     return out[:7]
 

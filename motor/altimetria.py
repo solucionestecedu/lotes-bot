@@ -124,11 +124,13 @@ def zonas(malla: Malla, recorte: Polygon, desde: float, hasta: float = math.inf,
     return [q for q in getattr(g, "geoms", [g]) if q.geom_type == "Polygon" and q.area >= area_min]
 
 
-def barrancos(malla: Malla, anillo, umbral: float = PEND_BARRANCO, area_min: float = 60.0, tope: float = 0.20) -> list[Polygon]:
+def barrancos(malla: Malla, anillo, umbral: float = PEND_BARRANCO, area_min: float = 60.0, tope: float = 0.20,
+              partir: bool = False) -> list[Polygon]:
     """Caídas fuertes que no se lotifican: zonas con más de `umbral` % pegadas al borde del terreno (el barranco de una
     quebrada, un talud). Se suavizan 2 m. No se toman las que partirían el terreno en pedazos ni más del `tope` del
     área: en un terreno empinado de punta a punta las pendientes fuertes son parte de la ladera (se resuelven con
-    terrazas y lotes más grandes), no un barranco."""
+    terrazas y lotes más grandes), no un barranco. Con `partir` sí se toman las que cruzan el terreno de lado a lado
+    (en una sola fila de lotes la calle las cruza y los lotes quedan antes y después)."""
     terreno = Polygon(anillo).buffer(0)
     borde = terreno.exterior.buffer(3.0)
     cands = []
@@ -144,7 +146,7 @@ def barrancos(malla: Malla, anillo, umbral: float = PEND_BARRANCO, area_min: flo
             continue
         resto = terreno.difference(unary_union(out + [z]))
         piezas = sorted((q for q in getattr(resto, "geoms", [resto]) if q.geom_type == "Polygon"), key=lambda q: -q.area)
-        if not piezas or piezas[0].area < 0.97 * resto.area:  # dejaría pedazos sueltos
+        if not piezas or (not partir and piezas[0].area < 0.97 * resto.area):  # dejaría pedazos sueltos
             continue
         if len(piezas[0].interiors) > hoyos0:  # dejaría un hoyo adentro de los lotes
             continue

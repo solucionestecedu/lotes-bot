@@ -271,8 +271,9 @@ def cauce_quebrada(anillo, ficha: dict | None, separacion: float = 7.0):
 
 def proteccion_de_quebrada(protecciones: list, anillo, ficha: dict | None) -> Polygon | None:
     """De las zonas no lotificadas, la que es la franja de la quebrada: la que más lindero comparte con el lado de la
-    quebrada (las demás son caídas fuertes). Sin lado conocido, la más grande."""
-    if not protecciones:
+    quebrada (las demás son caídas fuertes). Sin lado conocido, la más grande. Si la ficha no trae quebradas, ninguna
+    (todas son caídas fuertes del relieve)."""
+    if not protecciones or (ficha is not None and not (ficha or {}).get("quebradas")):
         return None
     lados = [q.get("lado") for q in (ficha or {}).get("quebradas") or [] if q.get("lado")]
     if lados:
