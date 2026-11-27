@@ -114,6 +114,9 @@ def cuadro_areas(t: Terreno, lot: Resultado, partes: list | None) -> dict:
 
 
 def _datos_opamss(op: dict) -> list[tuple[str, str]]:
+    if op.get("sin_cobertura"):
+        return [("Cobertura", "el Esquema Director no tiene datos de este terreno (puede ser un distrito que entró al AMSS "
+                              "después); pedir calificación de lugar a la OPAMSS")]
     zonas = op.get("uso_suelo") or []
     out = []
     if zonas:

@@ -36,6 +36,10 @@ MAX_HISTORIAL = 24
 def resumen_opamss(op: dict) -> dict:
     """Lo esencial del geovisor de la OPAMSS para que el bot se lo diga al usuario (con su fuente)."""
     out = {"fuente": op.get("fuente")}
+    if op.get("sin_cobertura"):
+        out["sin_datos"] = ("el Esquema Director de la OPAMSS no tiene datos de este terreno (puede ser un distrito que "
+                            "entró al AMSS después); hay que pedir calificación de lugar")
+        return out
     zonas = op.get("uso_suelo") or []
     if zonas:
         out["clasificacion_del_suelo"] = [f"{z['pct']:.0f} % {z.get('clasificacion') or z.get('codigo')}" +

@@ -247,6 +247,9 @@ def consultar(anillo, http=None) -> dict | None:
                 fallaron.append(k)
     if len(fallaron) == len(tareas):
         return None
+    if out.get("uso_suelo") == [] and not out.get("peligrosidad_superficial"):
+        # el Esquema Director no cubre este lugar (p. ej. distritos que entraron al AMSS después): sin datos ≠ sin peligro
+        out["sin_cobertura"] = True
     if fallaron:
         out["no_se_pudo_consultar"] = fallaron
     return out

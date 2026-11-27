@@ -281,6 +281,12 @@ def filas_opamss(lot, op: dict) -> list[dict]:
     """Filas del cuadro con lo que dice el geovisor de la OPAMSS: clasificación y tratamiento del suelo, alturas,
     impermeabilización y edificabilidad, vías proyectadas y peligros. Fuente en cada fila."""
     filas = []
+    if op.get("sin_cobertura"):
+        f = _fila("Datos de la OPAMSS", "Geovisor OPAMSS", "zonificación del Esquema Director", "sin datos para este terreno",
+                  "falta_dato", "El Esquema Director de la OPAMSS no tiene datos de este lugar (puede ser un distrito que "
+                  "entró al AMSS después de 2024). Pedir calificación de lugar a la OPAMSS.")
+        f["fuente"] = op.get("fuente")
+        return [f]
     zonas = [z for z in op.get("uso_suelo") or [] if z.get("pct", 0) > 0]
     if zonas:
         txt = " · ".join(f"{z['pct']:.0f} % {z.get('clasificacion') or z.get('codigo')}" for z in zonas)
@@ -355,7 +361,7 @@ def filas_opamss(lot, op: dict) -> list[dict]:
                            "; ".join(peligros), "revisar",
                            "Pedir estudio geotécnico (suelos y estabilidad de taludes) y diseño sísmico; en zonas de "
                            "dinámica superficial, obras de drenaje y protección de laderas."))
-    elif op.get("uso_suelo") is not None and op.get("peligrosidad_superficial") is not None:
+    elif op.get("peligrosidad_superficial"):  # hay datos de peligrosidad y ninguno es alto (sin datos no es "cumple")
         filas.append(_fila("Peligros del lugar", f"{ED}, Anexos 22 y 28", "sin peligro alto", "no se marca peligro alto",
                            "cumple"))
 

@@ -112,7 +112,8 @@ def test_suelo_urbano_sin_peligros_cumple():
     srv = ServidorFalso({opamss.USO_SUELO: {"features": [
         {"attributes": {"cod_clas": "URB", "des_clas": "Suelo urbano", "des_tra": "Consolidacion (CON)",
                         "alt_bas": 4, "imp_base": 70, "ien_base": 2.0},
-         "geometry": _esri(Polygon([(X0 - 10, Y0 - 10), (X0 + 110, Y0 - 10), (X0 + 110, Y0 + 70), (X0 - 10, Y0 + 70)]))}]}})
+         "geometry": _esri(Polygon([(X0 - 10, Y0 - 10), (X0 + 110, Y0 - 10), (X0 + 110, Y0 + 70), (X0 - 10, Y0 + 70)]))}]},
+        opamss.PELIGROSIDAD: {"features": [{"attributes": {"problemati": "Baja"}, "geometry": _esri(Polygon(ANILLO))}]}})
     op = opamss.consultar(ANILLO, http=srv)
     filas = {f["regla"]: f for f in normas.filas_opamss(type("L", (), {"lotes": [], "calles": [], "angulo": 0.0})(), op)}
     assert filas["Clasificación del suelo"]["estado"] == "cumple"
@@ -210,3 +211,15 @@ def test_porcentajes_preguntando_por_puntos():
     op = opamss.consultar(ANILLO, http=srv)
     assert op["uso_suelo"][0]["pct"] == 100.0
     assert not any(p["geometryType"] == "esriGeometryPoint" for c, p in srv.pedidos if c == opamss.USO_SUELO)
+
+
+def test_sin_cobertura_no_es_sin_peligro():
+    """Chiltiupán real: el Esquema Director no trae nada de ahí. No se debe decir que cumple ni que no hay peligro."""
+    op = opamss.consultar(ANILLO, http=ServidorFalso({}))
+    assert op["sin_cobertura"] is True
+    filas = normas.filas_opamss(type("L", (), {"lotes": [], "calles": [], "angulo": 0.0})(), op)
+    assert len(filas) == 1 and filas[0]["estado"] == "falta_dato" and "sin datos" in filas[0]["proyecto"]
+    from agente import resumen_opamss
+    assert "sin_datos" in resumen_opamss(op)
+    from motor.resumen import _datos_opamss
+    assert _datos_opamss(op)[0][0] == "Cobertura"
