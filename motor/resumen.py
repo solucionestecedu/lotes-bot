@@ -369,6 +369,19 @@ def generar_resumen(ruta: str, t: Terreno, lot: Resultado, malla, ficha: dict | 
                + (f" (el terreno baja hacia el {rel['baja_hacia']})" if rel else "") + "; la descarga se define en el "
                "estudio hidráulico y necesita permiso ambiental"),
               ("Aguas negras", "colector de ANDA si hay factibilidad; si no, fosa séptica por lote o planta de tratamiento")]
+    osm = ficha.get("osm")
+    if osm:
+        def _txt(i):
+            nombre = f" «{i['nombre']}»" if i.get("nombre") else ""
+            donde = (f"cruza el terreno ({i['cruza_m']:.0f} m)" if i.get("cruza_m") else
+                     f"pegada al lado {i['lado']}" if i.get("colinda") else f"a {i['distancia_m']:.0f} m al {i['lado']}")
+            return f"{i['tipo']}{nombre}, {donde}"
+        datos.append(("Calles cercanas (mapa)", "; ".join(_txt(i) for i in (osm.get("calles") or [])[:3])
+                      or "no aparecen en el mapa a menos de 300 m"))
+        datos.append(("Ríos y quebradas (mapa)", "; ".join(_txt(i) for i in (osm.get("aguas") or [])[:3])
+                      or "no aparecen en el mapa a menos de 300 m"))
+        datos.append(("Fuente del mapa", "OpenStreetMap (© colaboradores de OpenStreetMap, licencia ODbL). El mapa puede "
+                                         "estar incompleto: lo que no aparece no quiere decir que no exista."))
     td = Table([[P(a, "cb"), P(b, "c")] for a, b in datos], colWidths=[W * 0.24, W * 0.76])
     td.setStyle(TableStyle([("LINEBELOW", (0, 0), (-1, -1), 0.3, LINEA), ("VALIGN", (0, 0), (-1, -1), "TOP")]))
     story.append(td)

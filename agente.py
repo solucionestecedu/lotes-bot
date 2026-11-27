@@ -26,6 +26,7 @@ from motor.lotificacion import (LADOS, ErrorLotificacion, Parametros, franja_de_
 from motor.rumbos import M2_POR_V2, ErrorRumbo, leer_rumbo, poligonal
 from motor.terreno import Terreno, desde_coordenadas, desde_texto_rumbos, desde_tramos, verificar_con_coordenadas
 from servicios import opamss as geovisor_opamss
+from servicios import osm as mapa_osm
 from servicios.llm import LLM
 
 log = logging.getLogger("lotes-bot.agente")
@@ -110,6 +111,7 @@ class Sesion:
     partes: list = field(default_factory=list)                 # terrenos unidos: [{"origen", "anillo"}] relativos al centroide
     lindero: list | None = None                                # lindero común de los terrenos unidos (relativo al centroide)
     opamss: dict | None = None                                 # lo que dice el geovisor de la OPAMSS del terreno
+    osm: dict | None = None                                    # calles, ríos y construcciones alrededor (OpenStreetMap)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def get_terreno(self) -> Terreno | None:
@@ -122,6 +124,7 @@ class Sesion:
         self.lotes_stats = None
         self.cumplimiento = []
         self.opamss = None
+        self.osm = None
 
     def get_malla(self):
         return relieve.Malla.de_dict(self.malla) if self.malla else None
@@ -379,6 +382,8 @@ FLUJO:
    lotes_por_lado=[mín, máx]; tipo campestre. Con dos terrenos unidos la calle va sobre el lindero común y cada lado es
    un terreno; por defecto la calle va completa dentro del terreno más grande, pegada al lindero (calle_sobre). No
    calcules el tamaño de lote tú: el motor reparte y te dice cuánto queda.
+   Lo que viene "según el mapa (OpenStreetMap)" es pista, no dato del plano: pídele que lo confirme. Si "acceso_mapa"
+   dice que el plano y el mapa no coinciden, pregúntalo.
    Si "encontrado" trae "opamss", dile en 2 o 3 líneas lo que dice la OPAMSS del lugar ("según la OPAMSS"): la
    clasificación del suelo, los límites (altura, impermeabilización, edificabilidad) y si hay peligros o una vía
    proyectada. Si trae "alerta" (suelo no urbanizable), dilo primero y claro.
@@ -842,6 +847,9 @@ class Agente:
                 continue
             if not c or c["veredicto"] == "cauce":
                 continue
+            if any(a["lado"] == lado and a["distancia_m"] <= 50 and a["tipo"] in ("quebrada", "río")
+                   for a in (s.osm or {}).get("aguas") or []):
+                continue  # el mapa (OpenStreetMap) la muestra de ese lado
             que = {"ladera": f"del lado {lado} el terreno solo sigue bajando (ladera), sin el fondo de una quebrada",
                    "sube": f"del lado {lado} el terreno sube: ahí no se ve una quebrada",
                    "plano": f"del lado {lado} el terreno está casi parejo: no se ve una quebrada"}[c["veredicto"]]
@@ -1115,45 +1123,72 @@ class Agente:
         return out
 
     def _averiguar(self, s: Sesion, t, m, st: dict) -> dict | None:
-        """Lo que se puede saber sin preguntar: dónde cae (y si está en el AMSS), el acceso y las quebradas que dice el
-        plano (con su profundidad aproximada por el relieve) y el tipo de proyecto que le queda. Queda en la ficha como
-        'sugerido' hasta que el usuario lo confirme."""
+        """Lo que se puede saber sin preguntar: dónde cae (y si está en el AMSS, con lo que dice la OPAMSS), el acceso y
+        las quebradas que dicen el plano y el mapa (OpenStreetMap), con la profundidad aproximada por el relieve, y el
+        tipo de proyecto que le queda. Queda en la ficha como 'sugerido' hasta que el usuario lo confirme."""
+        from concurrent.futures import ThreadPoolExecutor
+
         enc, ficha = {}, {}
         lugar = territorio.donde(*t.centroide())
+        amss = bool(lugar and lugar["amss"])
+        with ThreadPoolExecutor(max_workers=2) as ex:  # la OPAMSS y el mapa a la vez
+            f_op = ex.submit(geovisor_opamss.consultar, t.puntos) if amss else None
+            f_osm = ex.submit(mapa_osm.consultar, t.puntos)
+            for nombre, fut in (("opamss", f_op), ("osm", f_osm)):
+                try:
+                    setattr(s, nombre, fut.result() if fut else None)
+                except Exception:  # noqa: BLE001
+                    log.exception("consulta %s", nombre)
+                    setattr(s, nombre, None)
         if lugar:
             enc["lugar"] = lugar
-            if lugar["amss"]:
+            if amss:
                 ficha["zona"] = "amss"
                 enc["zona"] = ("dentro del Área Metropolitana de San Salvador: el permiso va por la OPAMSS y aplican sus "
                                "normas (área verde 10 % del área útil)")
-                try:  # lo que dice la OPAMSS del lugar (Esquema Director): las mismas capas que su plataforma NIX
-                    s.opamss = geovisor_opamss.consultar(t.puntos)
-                except Exception:  # noqa: BLE001
-                    log.exception("geovisor OPAMSS")
-                    s.opamss = None
                 enc["opamss"] = (resumen_opamss(s.opamss) if s.opamss else
                                  "no se pudo consultar el geovisor de la OPAMSS (se puede volver a intentar)")
+        osm = s.osm or {}
+        if s.osm:
+            enc["mapa"] = mapa_osm.resumen(s.osm)
         plano = s.ficha.get("del_plano") or []
         calles = [c["lado"] for c in plano if c.get("tipo") == "calle" and c.get("lado") in LADOS]
+        calle_mapa = next((c for c in osm.get("calles") or [] if c["colinda"]), None)
         if calles:
             ficha["acceso_lado"] = calles[0]
             enc["acceso"] = f"la calle pública llega por el {calles[0]} (lo dice el plano)"
+            if calle_mapa and calle_mapa["lado"] != calles[0] and not any(
+                    c["colinda"] and c["lado"] == calles[0] for c in osm.get("calles") or []):
+                enc["acceso_mapa"] = (f"ojo: el plano dice que la calle llega por el {calles[0]}, pero en el mapa la calle "
+                                      f"pegada al terreno está al {calle_mapa['lado']} ({calle_mapa['tipo']}); confírmalo")
+        elif calle_mapa:
+            ficha["acceso_lado"] = calle_mapa["lado"]
+            enc["acceso"] = (f"según el mapa (OpenStreetMap), una {calle_mapa['tipo']} pasa pegada al lado "
+                             f"{calle_mapa['lado']}: por ahí sería el acceso (confírmalo)")
         qs = []
         for c in plano:
             if c.get("tipo") in ("quebrada", "rio") and c.get("lado") in LADOS:
-                q = {"tipo": c["tipo"], "lado": c["lado"]}
-                p = territorio.profundidad_al_lado(m, t.puntos, c["lado"]) if c["tipo"] == "quebrada" else None
-                if p and p["tipica_m"] >= 1.0:
-                    q["profundidad_m"] = max(p["tipica_m"], 1.0)
-                    q["profundidad_aprox"] = f"unos {p['tipica_m']:g} m (hasta {p['maxima_m']:g} m), medida con el relieve satelital"
-                qs.append(q)
+                qs.append({"tipo": c["tipo"], "lado": c["lado"], "origen": "plano"})
+        lados_q = {q["lado"] for q in qs}
+        for a in osm.get("aguas") or []:
+            if a["colinda"] and a["tipo"] in ("quebrada", "río") and a["lado"] not in lados_q:
+                qs.append({"tipo": "rio" if a["tipo"] == "río" else "quebrada", "lado": a["lado"], "origen": "mapa",
+                           **({"nombre": a["nombre"]} if a.get("nombre") else {})})
+                lados_q.add(a["lado"])
+        for q in qs:
+            p = territorio.profundidad_al_lado(m, t.puntos, q["lado"]) if q["tipo"] == "quebrada" else None
+            if p and p["tipica_m"] >= 1.0:
+                q["profundidad_m"] = max(p["tipica_m"], 1.0)
+                q["profundidad_aprox"] = f"unos {p['tipica_m']:g} m (hasta {p['maxima_m']:g} m), medida con el relieve satelital"
         if qs:
-            ficha["quebradas"] = [{k: v for k, v in q.items() if k != "profundidad_aprox"} for q in qs]
-            enc["quebradas"] = qs
+            ficha["quebradas"] = [{k: v for k, v in q.items() if k in ("tipo", "lado", "profundidad_m")} for q in qs]
+            enc["quebradas"] = [dict(q, origen="lo dice el plano" if q["origen"] == "plano" else
+                                     "aparece en el mapa (OpenStreetMap); confírmalo") for q in qs]
         elif plano:
             ficha["sin_quebradas"] = True
-            enc["quebradas"] = "el plano no menciona quebradas ni ríos en las colindancias"
-        prop = territorio.propuesta_proyecto(t.area, st.get("pendiente_media"), bool(lugar and lugar["amss"]))
+            enc["quebradas"] = "el plano no menciona quebradas ni ríos en las colindancias" + (
+                " y en el mapa tampoco aparece ninguna pegada al terreno" if s.osm else "")
+        prop = territorio.propuesta_proyecto(t.area, st.get("pendiente_media"), amss)
         ficha.update(tipo=prop["tipo"], lote_objetivo_m2=prop["lote_objetivo_m2"])
         enc["propuesta"] = prop
         s.ficha["sugerido"] = {"encontrado": enc, "ficha": ficha}
@@ -1360,7 +1395,7 @@ class Agente:
                 rpdf = os.path.join(carpeta, f"{base}-resumen-ejecutivo.pdf")
                 cx, cy = t.centroide()
                 partes_r = [{**p, "anillo": [(x + cx, y + cy) for x, y in p["anillo"]]} for p in s.partes] or None
-                res = generar_resumen(rpdf, t, lot, m if t.ubicado else None, dict(s.ficha, opamss=s.opamss), nombre,
+                res = generar_resumen(rpdf, t, lot, m if t.ubicado else None, dict(s.ficha, opamss=s.opamss, osm=s.osm), nombre,
                                       partes_r, s.proyecto.get("ubicacion", ""), filas, img_res, entrega)
                 avisos = res["avisos"]
                 from motor.revisor import avisos_de_revision
