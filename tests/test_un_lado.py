@@ -136,3 +136,21 @@ def test_el_bot_pregunta_si_el_relieve_no_muestra_la_quebrada(tmp_path):
     s.ficha = {"quebradas": [{"tipo": "quebrada", "lado": "sur", "profundidad_m": 6}],
                "del_plano": [{"lado": "sur", "tipo": "quebrada"}]}
     assert ag._revisar_quebradas(s) == []  # lo que dice el plano no se cuestiona
+
+
+def test_equipamiento_sin_perder_un_lote(tmp_path, monkeypatch):
+    """OPAMSS pide 8 m² por lote: en retícula se saca solo eso de un costado de un lote, no el lote completo (antes,
+    en Chiltiupán, se iban 696 m² para cumplir 64 m² y se perdía un lote)."""
+    m = relieve.Malla.de_dict(json.loads(TA._texto("chiltiupan_malla.json")))
+    monkeypatch.setattr(relieve, "descargar", lambda anillo, paso=5.0, http=None: m)
+    ag = Agente(TA.Guion(TA._lectura_chiltiupan()), str(tmp_path))
+    s = Sesion("eq")
+    ag.atender(s, "este es el plano", [{"mime": "image/jpeg", "nombre": "plano.jpg", "datos": b"foto-del-plano"}])
+    ag.h_obtener_relieve(s)
+    ag.h_guardar_ficha(s, zona="amss", tipo="campestre", lote_objetivo_m2=600, acceso_lado="norte", cerrado=True,
+                       quebradas=[{"tipo": "quebrada", "lado": "sur", "profundidad_m": 6}], quebrada_confirmada=True,
+                       figura="lotificacion", agua="anda", luz="si", distribucion="automatica")
+    out = ag.h_predisenar(s)
+    req = 8.0 * out["lotes"]
+    assert req - 0.5 <= out["area_equipamiento_m2"] <= 1.3 * req
+    assert out["lotes"] >= 9

@@ -641,11 +641,27 @@ def lotificar(anillo, P: Parametros | None = None, malla: Malla | None = None, e
             else:
                 l.poly, l.area, l.frente = antes
 
-    # equipamiento social: los lotes más planos que queden
+    # equipamiento social: de los lotes más planos que queden. Primero se saca solo lo que pide la norma de un costado
+    # del lote (con frente a la calle) sin perder el lote; si no se puede, el lote completo.
     equip = []
     while lotes and P.equipamiento_m2 > 0 and sum(e.area for e in equip) < P.equipamiento_m2 - 1e-6:
-        k = min(range(len(lotes)), key=lambda i: lotes[i].pendiente if math.isfinite(lotes[i].pendiente) else abs(lotes[i].x - xs))
-        equip.append(lotes.pop(k))
+        falta_eq = P.equipamiento_m2 - sum(e.area for e in equip)
+        orden = sorted(range(len(lotes)),
+                       key=lambda i: lotes[i].pendiente if math.isfinite(lotes[i].pendiente) else abs(lotes[i].x - xs))
+        hecho = False
+        for k in orden:
+            l = lotes[k]
+            if l.area - falta_eq * 1.02 < P.area_minima:
+                continue
+            r_ = recortar(l, falta_eq * 1.02, frente_pedazo=6.0)
+            if r_:
+                pedazo, resto, fr = r_
+                l.poly, l.area, l.frente = resto, resto.area, fr
+                equip.append(_Lote(pedazo, pedazo.area, pedazo.boundary.intersection(calle_b).length, l.fila, l.x))
+                hecho = True
+                break
+        if not hecho:
+            equip.append(lotes.pop(orden[0]))
 
     lotes.sort(key=lambda l: (l.fila, l.x))
     salida = []

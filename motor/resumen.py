@@ -302,7 +302,12 @@ def generar_resumen(ruta: str, t: Terreno, lot: Resultado, malla, ficha: dict | 
                                                       f"{next(dd_ for dd_, l_ in LIMITES_PENDIENTE_CALLE if l_ == lim)} m)"
                                                       if lim else "")))
     if ficha.get("cerrado"):
-        datos.append(("Acceso", "un solo acceso desde la calle pública, con portón y caseta de vigilancia"))
+        n_acc = int(st.get("accesos") or 1)
+        if n_acc <= 1:
+            datos.append(("Acceso", "un solo acceso desde la calle pública, con portón y caseta de vigilancia"))
+        else:  # lo mismo que dice el cuadro de normas: no prometer un solo portón si el trazo tiene varias salidas
+            datos.append(("Acceso", f"el prediseño tiene {n_acc} salidas a la calle pública; para cerrarlo con un solo "
+                                    "portón hay que juntarlas (o poner portón en cada una)"))
     agua = {"anda": "red de ANDA (pedir factibilidad)", "pozo": "pozo propio (pedir permiso y prueba de caudal)"}.get(
         ficha.get("agua"), "por definir (ANDA, pozo o sistema comunitario)")
     datos += [("Agua potable", agua),
